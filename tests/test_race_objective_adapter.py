@@ -47,7 +47,9 @@ def _model_and_params(com_height_m=0.040, time_coefficient=1.0, lift_20_n=0.5, c
 
 def test_hash_of_locked_file_matches():
     path = Path(__file__).resolve().parents[1] / "race_objective.py"
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    # Normalize line endings so the source lock is stable across Windows and
+    # Unix checkouts. The locked content is the LF-normalized Python source.
+    digest = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     assert digest == EXPECTED_HASH
 
 
