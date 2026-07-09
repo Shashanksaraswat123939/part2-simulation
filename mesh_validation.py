@@ -157,9 +157,9 @@ def run_laminar_vs_komega_sst_comparison(
         L_komega_sst=komega.L,
         Cm_laminar=laminar.Cm,
         Cm_komega_sst=komega.Cm,
-        relative_delta_D20=abs(komega.D20 - laminar.D20) / laminar.D20,
-        relative_delta_L=abs(komega.L - laminar.L) / laminar.L,
-        relative_delta_Cm=abs(komega.Cm - laminar.Cm) / laminar.Cm,
+        relative_delta_D20=abs(komega.D20 - laminar.D20) / laminar.D20 if laminar.D20 != 0.0 else 0.0,
+        relative_delta_L=abs(komega.L - laminar.L) / abs(laminar.L) if laminar.L != 0.0 else (0.0 if komega.L == 0.0 else float("inf")),
+        relative_delta_Cm=abs(komega.Cm - laminar.Cm) / abs(laminar.Cm) if laminar.Cm != 0.0 else (0.0 if komega.Cm == 0.0 else float("inf")),
     )
 
 

@@ -10,7 +10,8 @@ from pathlib import Path
 import numpy as np
 from scipy.interpolate import RBFInterpolator
 
-from physics_contract import GRAVITY_MPS2
+# GRAVITY_MPS2 imported from physics_contract if needed by future calibration functions
+# (currently unused — removed dead import to keep module clean)
 
 
 def _read_csv_columns(csv_path: str) -> dict[str, np.ndarray]:

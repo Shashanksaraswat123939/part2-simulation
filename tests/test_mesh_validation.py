@@ -109,6 +109,27 @@ def test_mesh_independence_without_runner_raises_typeerror():
         return
     raise AssertionError("Expected TypeError when cfd_runner not supplied")
 
+
+def test_solver_comparison_zero_laminar_lift_no_divisionerror():
+    """Laminar L=0 must not cause ZeroDivisionError in relative_delta_L."""
+    laminar = lambda stl_path: _runner_result(D20=5.0, L=0.0, moment=0.05)
+    komega  = lambda stl_path: _runner_result(D20=5.5, L=0.0, moment=0.055)
+    result = run_laminar_vs_komega_sst_comparison(
+        "car.stl", laminar_runner=laminar, komega_sst_runner=komega
+    )
+    # Both L=0 -> delta should be 0.0, not an error
+    assert result.relative_delta_L == 0.0
+
+
+def test_solver_comparison_zero_laminar_lift_nonzero_komega():
+    """Laminar L=0 but komega L!=0 should give inf relative delta, not crash."""
+    laminar = lambda stl_path: _runner_result(D20=5.0, L=0.0, moment=0.05)
+    komega  = lambda stl_path: _runner_result(D20=5.5, L=1.0, moment=0.055)
+    result = run_laminar_vs_komega_sst_comparison(
+        "car.stl", laminar_runner=laminar, komega_sst_runner=komega
+    )
+    assert math.isinf(result.relative_delta_L)
+
 if __name__ == "__main__":
     import sys
     fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]

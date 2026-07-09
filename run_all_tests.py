@@ -25,10 +25,14 @@ for t in tests:
         continue
     print(f'{t}: {last}')
     if 'passed' in last and 'failed' in last:
-        p = int(last.split('passed')[0].strip().split()[-1])
-        f = int(last.split('failed')[0].strip().split()[-1])
-        total_p += p
-        total_f += f
+        try:
+            p = int(last.split('passed')[0].strip().split()[-1])
+            f = int(last.split('failed')[0].strip().split()[-1])
+            total_p += p
+            total_f += f
+        except (ValueError, IndexError):
+            print(f'{t}: WARNING - could not parse summary line: {last!r}')
+            any_infra_failure = True
 print(f'\nTOTAL: {total_p} passed, {total_f} failed')
 if any_infra_failure:
     print('WARNING: one or more test files could not be run at all -- counts above are incomplete.')

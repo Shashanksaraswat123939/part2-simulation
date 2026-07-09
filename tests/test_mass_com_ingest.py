@@ -96,6 +96,41 @@ def test_h_com_and_x_com_extraction():
     assert math.isclose(result.com_x_m, 5.0)
 
 
+def test_absurd_com_position_rejected():
+    """COM position outside sanity bounds (e.g. 999m) must be rejected,
+    catching likely units (mm vs m) or coordinate-origin bugs."""
+    machined = [ComponentMassCOM("body", 1.0, 999.0, 999.0, 999.0)]
+    fixed = _fixed_hardware(
+        co2_mass=0.023,
+        co2_com=(999.0, 999.0, 999.0),
+        rear_mass=1.0,
+        rear_com=(999.0, 999.0, 999.0),
+        wheels_mass=1.0,
+        wheels_com=(999.0, 999.0, 999.0),
+    )
+    try:
+        ingest_mass_com(machined, fixed)
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError for absurd COM position")
+
+
+def test_com_sanity_bounds_exactly_at_limit_accepted():
+    """COM exactly at the sanity boundary (10.0m) must be accepted."""
+    machined = [ComponentMassCOM("body", 1.0, 10.0, 0.0, 0.0)]
+    fixed = _fixed_hardware(
+        co2_mass=0.023,
+        co2_com=(10.0, 0.0, 0.0),
+        rear_mass=1.0,
+        rear_com=(10.0, 0.0, 0.0),
+        wheels_mass=1.0,
+        wheels_com=(10.0, 0.0, 0.0),
+    )
+    # Should not raise — exactly at boundary is within bounds
+    result = ingest_mass_com(machined, fixed)
+    assert result.com_x_m == 10.0
+
+
 if __name__ == "__main__":
     import sys
     fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]

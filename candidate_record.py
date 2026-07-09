@@ -31,9 +31,10 @@ class CandidateRecord:
     dimensionless Cm; T_raw/T_penalized are seconds.
 
     Invalid input behavior:
-        Validation is performed by read_candidate_record for lifecycle_state.
-        write_candidate_record rejects non-JSON-serializable fields with
-        TypeError from json.dump.
+        lifecycle_state is validated at construction time in __post_init__
+        and again in read_candidate_record (defense-in-depth for externally
+        edited JSON). write_candidate_record rejects non-JSON-serializable
+        fields with TypeError from json.dump.
     """
 
     candidate_id: str

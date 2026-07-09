@@ -222,15 +222,15 @@ def validate_thrust_csv_physical_sanity(csv_path: str) -> None:
     """
     from race_objective import _clean_csv_arrays
     t, force, mass = _clean_csv_arrays(csv_path)
-    if any(ti < 0 for ti in t):
+    if (t < 0).any():
         raise ValueError(
             f"Thrust CSV {csv_path} contains negative time values"
         )
-    if any(fi < 0 for fi in force):
+    if (force < 0).any():
         raise ValueError(
             f"Thrust CSV {csv_path} contains negative force values"
         )
-    if any(mi <= 0 for mi in mass):
+    if (mass <= 0).any():
         raise ValueError(
             f"Thrust CSV {csv_path} contains non-positive mass values"
         )

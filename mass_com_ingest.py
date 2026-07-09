@@ -12,6 +12,8 @@ from physics_contract import ComponentMassCOM, FullCarMassCOM
 COM_SANITY_BOUNDS_M = (-10.0, 10.0)
 
 CO2_CARTRIDGE_MASS_KG = 0.023          # 23 g, fixed
+
+
 @dataclass(frozen=True)
 class FixedHardwareSpec:
     """Fixed hardware masses and COMs.
