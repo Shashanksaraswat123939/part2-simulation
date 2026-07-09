@@ -24,7 +24,16 @@ def _read_csv_columns(csv_path: str) -> dict[str, np.ndarray]:
         rows = list(reader)
         columns = {}
         for name in reader.fieldnames:
-            columns[name] = np.asarray([float(row[name]) for row in rows], dtype=float)
+            values = []
+            for row_idx, row in enumerate(rows):
+                try:
+                    values.append(float(row[name]))
+                except (ValueError, TypeError) as exc:
+                    raise ValueError(
+                        f"Error reading {path}: column {name!r}, row {row_idx + 2} "
+                        f"(header is row 1): cannot convert {row[name]!r} to float"
+                    ) from exc
+            columns[name] = np.asarray(values, dtype=float)
         return columns
 
 

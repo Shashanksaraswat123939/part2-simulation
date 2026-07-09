@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from cfd_wrapper import run_half_car_cfd
 from physics_contract import AIR_DENSITY_KGM3
 
+# Sentinel for detecting when cfd_runner was not supplied.
+# Using this instead of defaulting to run_half_car_cfd prevents the silent
+# false-positive mesh independence study that occurs when the default runner
+# ignores the resolution label.
+_REQUIRED_RUNNER = object()
+
 
 @dataclass(frozen=True)
 class MeshIndependenceResult:
@@ -28,13 +34,14 @@ class MeshIndependenceResult:
 
 
 def _relative_spread(values: tuple[float, ...]) -> float:
-    mean = sum(values) / len(values)
-    if mean == 0:
-        # All-zero or symmetric mixed-sign values: spread is undefined.
-        # Return 0.0 so mesh independence doesn't fail on a zero-mean result.
-        # This is conservative: if all values are zero, there's no spread.
+    spread = max(values) - min(values)
+    scale = max(abs(v) for v in values)
+    if scale < 1e-9:
+        # All values genuinely near zero (e.g. a symmetric car with no
+        # net lift) -- spread is physically negligible regardless of sign,
+        # this is the one case where 0.0 is actually correct.
         return 0.0
-    return (max(values) - min(values)) / abs(mean)
+    return spread / scale
 
 
 def _full_quantities_from_runner_result(result):
@@ -44,7 +51,8 @@ def _full_quantities_from_runner_result(result):
 
 def run_mesh_independence_study(
     stl_path: str,
-    cfd_runner=run_half_car_cfd,
+    *,
+    cfd_runner=_REQUIRED_RUNNER,
     resolutions: tuple[str, ...] = ("coarse", "medium", "fine"),
 ) -> MeshIndependenceResult:
     """
@@ -53,11 +61,11 @@ def run_mesh_independence_study(
     Args:
         stl_path: STL path string.
         cfd_runner: callable accepting (stl_path, resolution_label) and
-            returning (HalfCarQuantities, CFDHealthReport). The default
-            run_half_car_cfd accepts reference_speed_mps as the second
-            positional arg; callers using the default must pass resolutions
-            as numeric speed values, or inject a wrapper that maps resolution
-            labels to solver settings. Mock runners in tests accept a string.
+            returning (HalfCarQuantities, CFDHealthReport). This is a REQUIRED
+            keyword-only argument. The previous default (run_half_car_cfd)
+            silently ignored the resolution label and produced false-positive
+            mesh independence results. Callers must explicitly supply a runner
+            that actually varies mesh resolution.
         resolutions: opaque resolution labels passed through to cfd_runner.
 
     Returns:
@@ -65,9 +73,17 @@ def run_mesh_independence_study(
         spreads dimensionless.
 
     Invalid input behavior:
-        Exceptions from cfd_runner propagate; this function does not clamp or
-        warn. Zero-mean value sets produce spread=0.0 (see _relative_spread).
+        Raises TypeError if cfd_runner is not supplied (preventing silent
+        false-positive mesh independence). Exceptions from cfd_runner propagate;
+        this function does not clamp or warn.
     """
+    if cfd_runner is _REQUIRED_RUNNER:
+        raise TypeError(
+            "run_mesh_independence_study requires a cfd_runner keyword argument. "
+            "The default was removed because run_half_car_cfd ignores the "
+            "resolution label, producing false-positive mesh independence. "
+            "Supply a runner that actually varies mesh resolution."
+        )
     full_values = [
         _full_quantities_from_runner_result(cfd_runner(stl_path, resolution))
         for resolution in resolutions

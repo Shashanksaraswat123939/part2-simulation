@@ -6,6 +6,14 @@ from typing import Optional
 
 from race_objective_adapter import race_value_and_grad_guarded
 
+# Half-car scaling factor for the adjoint objective.
+# The forward CFD runs on a half-car mesh (symmetry plane), and D20 in the
+# param_vector is the full-car value (post to_full_car() doubling). The
+# adjoint objective differentiates w_D20 × D20 w.r.t. the half-car surface,
+# so we scale D20 by 0.5 to get the half-car contribution, preventing a 2x
+# error in surface sensitivities once real OpenFOAM adjoint is wired in.
+ADJOINT_HALF_CAR_SCALING = 0.5
+
 
 def compute_adjoint_objective_weight(
     param_vector,
@@ -39,7 +47,7 @@ def compute_adjoint_objective(
     param_vector,
     model,
 ) -> float:
-    """Returns the adjoint objective value: w_D20 × D20.
+    """Returns the adjoint objective value: w_D20 × D20 × ADJOINT_HALF_CAR_SCALING.
 
     Per the Part 2 Adjoint Objective Contract:
         Objective = w_D20 × D20
@@ -47,16 +55,21 @@ def compute_adjoint_objective(
     This is the quantity that OpenFOAM adjoint differentiates to get
     surface sensitivities dObjective/dSurface.
 
+    The adjoint runs on the half-car domain (per the Half-Car CFD Contract
+    in 02_simulation_setups spec). Full-car D20 is twice the half-car drag;
+    the adjoint surface only sees half the car, so the objective must use
+    half-car D20 to produce correct surface sensitivities.
+
     Args:
         param_vector: locked race_objective.py parameter vector.
         model: locked race_objective.py SmoothSheetModel.
 
     Returns:
-        Objective value in N×s/N = seconds (w_D20 × D20).
+        Objective value in N×s/N = seconds (w_D20 × D20 × 0.5).
     """
     w_D20 = compute_adjoint_objective_weight(param_vector, model)
     D20 = float(param_vector[0])  # drag_20_n is index 0 in PARAM_NAMES
-    return w_D20 * D20
+    return w_D20 * D20 * ADJOINT_HALF_CAR_SCALING
 
 
 def package_gradient_bundle(

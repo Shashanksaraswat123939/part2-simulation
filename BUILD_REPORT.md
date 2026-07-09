@@ -1,5 +1,66 @@
 # Part 2 Build Report
 
+## Physics Update (2026-07-09): Lift-dependent friction & fore-aft COM penalty
+
+Two new physics features were added to `race_objective.py` (unlocked, modified, re-locked):
+
+### Feature 1: Lift-dependent friction (normal force from lift coefficient)
+
+**Before:** Friction force was `F_fric = mu * m * g` (constant normal force).
+
+**After:** Friction force uses lift-dependent normal force:
+```
+L(v) = lift_20_n * v^2 / 20^2
+N = m*g - L(v)
+F_fric = mu * N = mu * (m*g - L(v))
+```
+This means downforce (positive lift) reduces the normal force and thus reduces
+friction, while upforce (negative lift) increases normal force and friction.
+
+**New parameter:** `lift_20_n` (full-car lift force at 20 m/s, in N) added to
+PARAM_NAMES at index 6.
+
+### Feature 2: Fore-aft COM sensitivity (dT/dx_com)
+
+**Before:** `dT_dx_com = 0.0` (fore-aft COM was not modeled).
+
+**After:** A COM-x penalty term was added to `race_time_seconds`:
+```
+com_x_penalty = k_x * (com_x_m - com_x_target)^2
+```
+where `k_x = 0.001 s/m^2` and `com_x_target = 0.0 m` (reference origin).
+
+**New parameter:** `com_x_m` (fore-aft COM position, in m) added to PARAM_NAMES
+at index 7.
+
+### Files changed
+
+- `race_objective.py` — PARAM_NAMES expanded from 6 to 8 entries; `distance_derivatives`
+  now uses lift-dependent friction; new `com_x_time_penalty()` function;
+  `race_time_seconds` adds com_x penalty; `make_param_vector` accepts `lift_20_n`
+  and `com_x_mm`; `finite_difference_check` fallback_steps updated.
+- `race_objective_adapter.py` — `adapt_gradients` now maps `lift_20_n` → `dT_dL`
+  and `com_x_m` → `dT_dx_com` (both non-zero); `_assert_physical_inputs` adds
+  com_x_m sanity bounds; `race_value_and_grad_guarded` subtracts both com_height
+  and com_x penalties for T_raw.
+- `tests/test_race_objective_adapter.py` — EXPECTED_HASH updated; param vectors
+  expanded to 8 entries; new tests `test_dT_dL_is_nonzero` and
+  `test_dT_dx_com_is_nonzero`; key mapping test updated for `dT_dL`.
+- `tests/test_adjoint_contract.py` — param vectors expanded to 8 entries.
+- `tests/test_integration_end_to_end.py` — param vector includes `full.L` and
+  `mass_report.com_x_m`.
+- `race_objective_hash.txt` — new SHA-256 hash of locked `race_objective.py`.
+
+### New hash
+
+`6ed47bb624245e85d67a3fb6dd196b4b69fe2debc39725fac8c9614aec404358`
+
+### Test results after update
+
+81 passed, 0 failed (was 79 before; 2 new tests added).
+
+---
+
 ## 1. Stage-by-stage test results
 
 ### Stage 1 - Coordinate & unit contract layer

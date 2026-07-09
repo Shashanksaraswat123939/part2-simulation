@@ -96,7 +96,7 @@ def test_end_to_end_pipeline_with_mocks():
         half, _health = cfd_wrapper.run_half_car_cfd(stl_path)
         full = half.to_full_car()
         model = build_smooth_sheet_model(csv_path, BuildSettings(n_basis=5, n_steps=60))
-        params = np.array([full.D20, mass_report.total_mass_kg, 0.02, 1e-7, 1.0, mass_report.com_z_m], dtype=np.float64)
+        params = np.array([full.D20, mass_report.total_mass_kg, 0.02, 1e-7, 1.0, mass_report.com_z_m, full.L, mass_report.com_x_m], dtype=np.float64)
         T_raw, T_penalized, adapted_grads = race_value_and_grad_guarded(params, model)
         w_D20 = compute_adjoint_objective_weight(params, model)
         gradients = package_gradient_bundle(

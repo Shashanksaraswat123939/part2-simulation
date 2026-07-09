@@ -80,11 +80,34 @@ def test_zero_relative_spread_is_safe():
 
 
 def test_mixed_sign_relative_spread_is_safe():
-    """Mixed-sign values summing to zero should not crash."""
+    """Mixed-sign values that cancel to zero mean should NOT report zero spread.
+    The old mean-based formula returned 0.0 for (-1, 1, 0), masking real spread.
+    The new max(abs)-based formula correctly reports nonzero spread."""
     from mesh_validation import _relative_spread
     result = _relative_spread((-1.0, 1.0, 0.0))
+    assert result > 0.0, (
+        "values that disagree in sign should show nonzero relative spread, "
+        "not be masked by their mean happening to cancel to zero"
+    )
+
+
+def test_all_near_zero_relative_spread_is_safe():
+    """Genuinely negligible values (not just zero-mean) should report 0 spread."""
+    from mesh_validation import _relative_spread
+    result = _relative_spread((1e-12, -1e-12, 0.0))
     assert result == 0.0
 
+
+
+
+def test_mesh_independence_without_runner_raises_typeerror():
+    """Calling run_mesh_independence_study without a cfd_runner must raise
+    TypeError, not silently produce a false-positive PASS."""
+    try:
+        run_mesh_independence_study("car.stl")
+    except TypeError:
+        return
+    raise AssertionError("Expected TypeError when cfd_runner not supplied")
 
 if __name__ == "__main__":
     import sys
