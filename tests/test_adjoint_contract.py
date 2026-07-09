@@ -116,14 +116,14 @@ def test_perturb_and_confirm_improvement():
 
 
 def test_adjoint_objective_is_w_D20_times_D20():
-    """Per Part 2 spec: Objective = w_D20 × D20."""
+    """Per Part 2 spec: Objective = w_D20 × D20, scaled by ADJOINT_HALF_CAR_SCALING (0.5)."""
     model = _model()
     params = _params(D20=12.0, mu=0.02)
     w_D20 = compute_adjoint_objective_weight(params, model)
     objective = compute_adjoint_objective(params, model)
-    expected = w_D20 * 12.0
+    expected = w_D20 * 12.0 * 0.5  # ADJOINT_HALF_CAR_SCALING = 0.5
     assert abs(objective - expected) < 1e-12, (
-        f"Objective {objective} != w_D20×D20 {expected}"
+        f"Objective {objective} != w_D20×D20×0.5 {expected}"
     )
 
 
