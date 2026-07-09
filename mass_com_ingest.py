@@ -12,15 +12,6 @@ from physics_contract import ComponentMassCOM, FullCarMassCOM
 COM_SANITY_BOUNDS_M = (-10.0, 10.0)
 
 CO2_CARTRIDGE_MASS_KG = 0.023          # 23 g, fixed
-CO2_CARTRIDGE_COM = None               # PLACEHOLDER: raise NotImplementedError
-                                        # if actual fixed position not supplied
-                                        # by caller -- see FixedHardwareSpec
-REAR_WING_MASS_KG = None                # PLACEHOLDER -- must be injected by caller,
-                                        # not hard-coded, since "known mass" was
-                                        # never given a number in the source docs
-WHEELS_AXLES_MASS_KG = None             # PLACEHOLDER -- same as above
-
-
 @dataclass(frozen=True)
 class FixedHardwareSpec:
     """Fixed hardware masses and COMs.
@@ -38,7 +29,10 @@ class FixedHardwareSpec:
 
     Invalid input behavior:
         Raises ValueError if co2_cartridge_mass_kg differs from 0.023 by more
-        than 1e-9 kg.
+        than 1e-9 kg. All fields are mandatory constructor arguments with no
+        defaults — Python's dataclass machinery enforces that callers supply
+        every value. There is no runtime NotImplementedError check; the
+        enforcement is structural via required fields.
     """
 
     co2_cartridge_mass_kg: float

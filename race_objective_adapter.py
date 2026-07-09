@@ -15,6 +15,7 @@ subtracting the COM penalty component, exposing both values per the spec.
 
 from __future__ import annotations
 
+from mass_com_ingest import COM_SANITY_BOUNDS_M
 from race_objective import (
     PARAM_NAMES,
     _COM_PENALTY_DATA_MM,
