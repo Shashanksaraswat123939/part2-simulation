@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from physics_contract import ComponentMassCOM, FullCarMassCOM
 
 
+# Broad sanity bounds for COM coordinates (m). A STEM Racing car is ~150mm long;
+# COM at 10m is clearly a units or origin bug, not a legitimate design.
+COM_SANITY_BOUNDS_M = (-10.0, 10.0)
+
 CO2_CARTRIDGE_MASS_KG = 0.023          # 23 g, fixed
 CO2_CARTRIDGE_COM = None               # PLACEHOLDER: raise NotImplementedError
                                         # if actual fixed position not supplied
@@ -109,6 +113,15 @@ def ingest_mass_com(
     com_x = sum(component.mass_kg * component.com_x_m for component in components) / total_mass
     com_y = sum(component.mass_kg * component.com_y_m for component in components) / total_mass
     com_z = sum(component.mass_kg * component.com_z_m for component in components) / total_mass
+
+    # Sanity check: COM coordinates should be within a physically reasonable range.
+    # A COM at 10m for a ~150mm car indicates a units bug (mm vs m) or origin error.
+    for name, value in (("com_x_m", com_x), ("com_y_m", com_y), ("com_z_m", com_z)):
+        if not (COM_SANITY_BOUNDS_M[0] <= value <= COM_SANITY_BOUNDS_M[1]):
+            raise ValueError(
+                f"{name}={value} is outside sanity bounds {COM_SANITY_BOUNDS_M}; "
+                f"check for a units (mm vs m) or coordinate-origin bug upstream"
+            )
 
     return FullCarMassCOM(
         total_mass_kg=total_mass,

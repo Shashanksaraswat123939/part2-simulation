@@ -17,9 +17,21 @@ from __future__ import annotations
 
 from race_objective import (
     PARAM_NAMES,
+    _COM_PENALTY_DATA_MM,
+    COM_TARGET_HEIGHT_M,
     com_height_time_penalty,
     com_x_time_penalty,
     race_value_and_grad,
+)
+
+# Derived from the locked race_objective.py's _COM_PENALTY_DATA_MM domain.
+# The COM penalty polynomial was fitted over delta_mm in [-12, +12],
+# i.e. com_height_m in [COM_TARGET_HEIGHT_M - 0.012, COM_TARGET_HEIGHT_M + 0.012].
+# Evaluating outside this range produces meaningless extrapolation.
+_COM_PENALTY_HALF_RANGE_M = max(abs(v) for v in _COM_PENALTY_DATA_MM) / 1000.0
+COM_HEIGHT_FIT_RANGE_M = (
+    COM_TARGET_HEIGHT_M - _COM_PENALTY_HALF_RANGE_M,
+    COM_TARGET_HEIGHT_M + _COM_PENALTY_HALF_RANGE_M,
 )
 
 
@@ -57,9 +69,23 @@ def _assert_physical_inputs(param_vector) -> None:
     if p["wheel_moi_kg_m2"] < 0:
         raise ValueError(f"wheel_moi_kg_m2 must be non-negative, got {p['wheel_moi_kg_m2']}")
     # lift_20_n: allow any value (both downforce and upforce are physically valid)
-    # com_x_m: sanity bounds (COM should be within a reasonable range of the car)
-    if abs(p["com_x_m"]) > 1.0:
-        raise ValueError(f"com_x_m outside sanity bounds (|x| > 1m), got {p['com_x_m']}")
+    # COM height extrapolation guard: the locked polynomial was fitted only
+    # over COM_HEIGHT_FIT_RANGE_M. Outside that range, the degree-4 polynomial
+    # produces meaningless values (up to 10^14 seconds penalty).
+    _tol = 1e-9  # small float tolerance for boundary comparisons
+    if not (COM_HEIGHT_FIT_RANGE_M[0] - _tol <= p["com_height_m"] <= COM_HEIGHT_FIT_RANGE_M[1] + _tol):
+        raise ValueError(
+            f"com_height_m={p['com_height_m']} is outside the COM penalty "
+            f"polynomial's fitted range {COM_HEIGHT_FIT_RANGE_M} -- "
+            f"extrapolation would produce a meaningless penalty value. "
+            f"Check upstream mass/COM ingestion for a units or origin bug."
+        )
+    # COM x sanity bounds (COM should be within a reasonable range of the car)
+    if not (COM_SANITY_BOUNDS_M[0] <= p["com_x_m"] <= COM_SANITY_BOUNDS_M[1]):
+        raise ValueError(
+            f"com_x_m={p['com_x_m']} outside sanity bounds {COM_SANITY_BOUNDS_M}, "
+            f"likely a units or origin bug"
+        )
 
 
 def adapt_gradients(raw_grads: dict) -> dict:
