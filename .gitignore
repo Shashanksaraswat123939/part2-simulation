@@ -10,3 +10,10 @@ venv/
 .env.*
 !.env.example
 *.log
+
+# Generated candidate/simulation artifacts (Part 2/3 pipeline outputs)
+candidates/
+*.stl
+*.npy
+cfd_case_*/
+*.foam
