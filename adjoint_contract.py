@@ -43,20 +43,11 @@ def compute_adjoint_objective_weight(
     return gradients["dT_dD20"]
 
 
-# ⚠ UNRESOLVED: The Part 2 spec does not state whether the OpenFOAM adjoint
-# case runs on the half-car mesh (matching the forward CFD run per the
-# Half-Car CFD Contract) or a mirrored full-car mesh. This function
-# currently uses full-car D20 (post to_full_car() doubling) with no scaling.
-# If the adjoint case is half-domain, this introduces a 2x error that must
-# be corrected either here or in Part 1's geometry designer before the
-# surface sensitivity is applied. This must be resolved by a human before
-# Stage 6 of the Part 3 build order (Adjoint integration) is implemented.
-
 def compute_adjoint_objective(
     param_vector,
     model,
 ) -> float:
-    """Returns the adjoint objective value: w_D20 × D20.
+    """Returns the adjoint objective value: w_D20 × D20 × ADJOINT_HALF_CAR_SCALING.
 
     Per the Part 2 Adjoint Objective Contract:
         Objective = w_D20 × D20
@@ -64,10 +55,10 @@ def compute_adjoint_objective(
     This is the quantity that OpenFOAM adjoint differentiates to get
     surface sensitivities dObjective/dSurface.
 
-    ⚠ Half-car scaling applied: D20 is multiplied by ADJOINT_HALF_CAR_SCALING
-    (0.5) before computing the objective, because the OpenFOAM adjoint will
-    run on the half-car mesh per the Half-Car CFD Contract. See the comment
-    at ADJOINT_HALF_CAR_SCALING above.
+    The adjoint runs on the half-car domain (per the Half-Car CFD Contract
+    in 02_simulation_setups spec). Full-car D20 is twice the half-car drag;
+    the adjoint surface only sees half the car, so the objective must use
+    half-car D20 to produce correct surface sensitivities.
 
     Args:
         param_vector: locked race_objective.py parameter vector.
