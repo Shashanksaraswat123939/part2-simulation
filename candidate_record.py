@@ -64,6 +64,13 @@ class CandidateRecord:
                 f"setup_logs exceeds {MAX_SETUP_LOGS_LEN} chars "
                 f"(got {len(self.setup_logs)}); truncate before writing"
             )
+        # Guard: validate lifecycle_state at construction time, not just at read.
+        # This prevents the codebase from creating its own invalid records.
+        if self.lifecycle_state not in ALLOWED_LIFECYCLE_STATES:
+            raise ValueError(
+                f"invalid lifecycle_state: {self.lifecycle_state!r}; "
+                f"must be one of {sorted(ALLOWED_LIFECYCLE_STATES)}"
+            )
 
 
 def _component_to_dict(component: ComponentMassCOM) -> dict:
@@ -134,10 +141,17 @@ def write_candidate_record(record: CandidateRecord, out_dir: str) -> str:
         with TypeError from json.dump.
     """
     # Path traversal guard: candidate_id must be a safe filename.
+    # Only reject exact '.' and '..' (not substring '..'), since a bare
+    # candidate_id with no separators cannot be a multi-segment path traversal.
+    # Separator rejection is handled by the '/' and '\\' checks above.
     safe_id = record.candidate_id.replace("\\", "/")
-    if "/" in safe_id or ".." in safe_id or safe_id != record.candidate_id:
+    if "/" in safe_id or safe_id != record.candidate_id:
         raise ValueError(
-            f"candidate_id contains path separators or '..': {record.candidate_id!r}"
+            f"candidate_id contains path separators: {record.candidate_id!r}"
+        )
+    if safe_id in ("..", "."):
+        raise ValueError(
+            f"candidate_id cannot be '.' or '..': {record.candidate_id!r}"
         )
 
     out_path = Path(out_dir)
