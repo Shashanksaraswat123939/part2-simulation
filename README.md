@@ -28,22 +28,24 @@ This is a development-stage engineering model. Passing tests establish software 
 
 ## Repository layout
 
-| Path | Purpose |
-| --- | --- |
-| `physics_contract.py` | Units, reference constants, physical dataclasses, and half/full-car conversion |
-| `mass_com_ingest.py` | Component mass and center-of-mass aggregation |
-| `cfd_wrapper.py` | STL checks, CFD execution contract, and health reporting |
-| `mesh_validation.py` | Mesh-independence and solver-validation calculations |
-| `calibration.py` | Thrust, friction, and COM-penalty calibration |
-| `race_objective.py` | Locked differentiable race-time implementation |
-| `race_objective_adapter.py` | Guarded interface between the locked objective and optimizer |
-| `adjoint_contract.py` | Adjoint weights and gradient packaging |
-| `candidate_record.py` | Candidate lifecycle model and JSON persistence |
-| `cfd_case_template/` | Placeholder for real OpenFOAM case dictionaries |
-| `tests/` | Standalone automated tests |
-| `run_all_tests.py` | Full test runner |
-| `BUILD_REPORT.md` | Detailed implementation, validation, and unresolved-issue report |
-| `audit_notes.md` | OpenClaw audit notes produced during review |
+The table below explains each important file twice: first in simple language, then with enough technical detail for someone working on the code.
+
+| Path | Easy explanation | What it does technically |
+| --- | --- | --- |
+| `physics_contract.py` | The project's rulebook for measurements and basic physics. It makes sure every part of the program agrees on units such as metres, millimetres, kilograms, newtons, and seconds. | Defines reference air density and speed, typed data structures for aerodynamic and mass results, unit conversions, input validation, and the rules for converting half-car CFD forces and areas into full-car values. It also calculates the pitching-moment coefficient while guarding against invalid or near-zero areas. |
+| `mass_com_ingest.py` | Combines the weight and position of every car component to find the total car mass and its balance point. | Accepts component-level mass and center-of-mass coordinates, validates that masses are physically valid, includes required fixed components such as the CO2 cartridge, and returns a mass-weighted full-car center of mass in metres. |
+| `cfd_wrapper.py` | Checks that a 3D car file is usable, sends it to the CFD process, and turns the solver output into a clean result. | Validates the STL path and basic mesh topology, rejects unsupported or invalid geometry, defines the interface for the future OpenFOAM runner, converts half-car solver results to full-car aerodynamic quantities, and records convergence, residuals, negative cells, y-plus, and Courant-number health information. The real OpenFOAM subprocess is not connected yet. |
+| `mesh_validation.py` | Checks whether the CFD answer is trustworthy instead of accepting the first result blindly. | Compares coarse, medium, and fine mesh results against the mesh-independence tolerance; compares solver outputs; calculates relative differences safely when values are zero or change sign; and estimates drag-area sensitivity across different speeds. |
+| `calibration.py` | Learns useful physics values from test data, such as the CO2 thrust curve, rolling resistance, and how COM position affects time. | Reads and validates CSV datasets, fits a radial-basis-function thrust surrogate, validates or imports a fitted rolling-friction coefficient, fits a polynomial COM-penalty curve, blocks extrapolation outside measured ranges, and calculates held-out R² scores to check fit quality. |
+| `race_objective.py` | Predicts how long the car should take to travel 20 metres and shows how changing each design value affects that time. | Contains the locked JAX-differentiable race model. It fits smooth thrust and mass curves, models drag, rolling friction, wheel inertia, changing CO2 mass, and COM-height penalty, integrates the distance-domain equations with RK4, and uses automatic differentiation to return race-time gradients. |
+| `race_objective_adapter.py` | Safely connects the race-time model to the rest of the optimizer without changing the locked model. | Validates the optimizer parameter vector, forces the unresolved `time_coefficient` to remain `1.0`, separates raw race time from penalized race time, renames gradients into the Stage 7 contract, and leaves fore-aft COM sensitivity as an explicit zero placeholder because the locked model does not calculate it. |
+| `adjoint_contract.py` | Packages the model's sensitivity results so an optimizer knows which design changes should improve race time. | Calculates the drag objective weight from the guarded race model, creates a consistent gradient bundle for drag, mass, COM height, COM position, and manufacturing sensitivity, and keeps lift and pitching-moment weights disabled until the required experiments and CFD connections exist. |
+| `candidate_record.py` | Saves every attempted car design and records whether it worked, failed, or was rejected. | Defines the candidate lifecycle states and serializes candidate geometry settings, file paths, mass/COM reports, CFD forces, objective values, gradients, logs, and failure reasons to JSON. It validates lifecycle values and rejects data that cannot be safely serialized. |
+| `cfd_case_template/` | The future home of the OpenFOAM setup files. It is currently only a placeholder. | Intended to contain production `snappyHexMesh`, `simpleFoam`, turbulence, boundary-condition, and solver dictionaries. These files have not been supplied, so the repository cannot yet launch a real OpenFOAM case. |
+| `tests/` | Small programs that deliberately check whether each part of the project behaves correctly. | Contains separate test scripts for physics contracts, mass/COM ingestion, STL and CFD handling, mesh validation, calibration, candidate storage, the objective adapter, adjoint calculations, and the end-to-end mocked pipeline. The tests cover expected results and important failure cases. |
+| `run_all_tests.py` | Runs every test and gives one simple pass/fail total. | Launches each standalone test module with the current Python interpreter, captures its output, extracts the number of passes and failures, and prints the combined result. The current expected total is `79 passed, 0 failed`. |
+| `BUILD_REPORT.md` | A detailed engineering diary explaining what was built, tested, assumed, and left unfinished. | Records stage-by-stage test results, hard-coded constants, placeholder locations, integrity checks, specification conflicts, hardening changes, and commands for independently reproducing the validation. Read this before treating the model as production-ready. |
+| `audit_notes.md` | Notes from the automated review that inspected the project for mistakes and weak assumptions. | Summarizes the OpenClaw review activity and findings. It is supporting audit evidence, not executable code and not a substitute for the formal build report or independent engineering validation. |
 
 ## Requirements
 
