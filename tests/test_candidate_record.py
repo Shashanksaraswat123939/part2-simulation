@@ -182,6 +182,49 @@ def test_setup_logs_size_limit_enforced():
     raise AssertionError("Expected ValueError for oversized setup_logs")
 
 
+
+
+def test_dotdot_substring_in_candidate_id_accepted():
+    """A candidate_id containing '..' as a substring (not a path segment)
+    should be accepted, since it cannot cause path traversal."""
+    record = _record(candidate_id="cand..001")
+    with tempfile.TemporaryDirectory() as d:
+        path = write_candidate_record(record, d)
+        loaded = read_candidate_record(path)
+        assert loaded.candidate_id == "cand..001"
+
+
+def test_dot_candidate_id_rejected():
+    """candidate_id '.' must be rejected (current directory)."""
+    record = _record(candidate_id=".")
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            write_candidate_record(record, d)
+        except ValueError:
+            return
+        raise AssertionError("Expected ValueError for '.' candidate_id")
+
+
+def test_dotdot_candidate_id_rejected():
+    """candidate_id '..' must be rejected (parent directory)."""
+    record = _record(candidate_id="..")
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            write_candidate_record(record, d)
+        except ValueError:
+            return
+        raise AssertionError("Expected ValueError for '..' candidate_id")
+
+
+def test_invalid_lifecycle_state_rejected_at_construction():
+    """CandidateRecord construction must reject invalid lifecycle_state,
+    not just at read time."""
+    try:
+        _record(lifecycle_state="totally_bogus_state")
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError for invalid lifecycle_state at construction")
+
 if __name__ == "__main__":
     import sys
     fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]

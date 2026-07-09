@@ -98,6 +98,17 @@ def test_all_near_zero_relative_spread_is_safe():
     assert result == 0.0
 
 
+
+
+def test_mesh_independence_without_runner_raises_typeerror():
+    """Calling run_mesh_independence_study without a cfd_runner must raise
+    TypeError, not silently produce a false-positive PASS."""
+    try:
+        run_mesh_independence_study("car.stl")
+    except TypeError:
+        return
+    raise AssertionError("Expected TypeError when cfd_runner not supplied")
+
 if __name__ == "__main__":
     import sys
     fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
