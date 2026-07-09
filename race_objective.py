@@ -92,6 +92,12 @@ _COM_POLY_BASELINE  = float(np.polyval(_COM_POLY_COEFFS_NP, 0.0))
 _COM_POLY_COEFFS    = jnp.asarray(_COM_POLY_COEFFS_NP, dtype=jnp.float64)
 COM_TARGET_HEIGHT_M = 0.030
 
+# COM-x (fore-aft) penalty model.
+# Simple quadratic: penalty = k_x * (com_x_m - com_x_target)^2
+# k_x = 0.001 s/m^2 (1 ms per mm^2 deviation from target)
+_COM_X_TARGET_M = 0.0
+_COM_X_PENALTY_K = 0.001
+
 # Parameter order for the optimizer-facing vector.
 PARAM_NAMES = (
     "drag_20_n",
@@ -100,6 +106,8 @@ PARAM_NAMES = (
     "wheel_moi_kg_m2",
     "time_coefficient",
     "com_height_m",
+    "lift_20_n",
+    "com_x_m",
 )
 
 
@@ -257,6 +265,17 @@ def com_height_time_penalty(params: jnp.ndarray) -> jnp.ndarray:
     return jnp.polyval(_COM_POLY_COEFFS, delta) - _COM_POLY_BASELINE
 
 
+def com_x_time_penalty(params: jnp.ndarray) -> jnp.ndarray:
+    """Fore-aft COM penalty: quadratic in distance from optimal x_com.
+
+    penalty = k_x * (com_x_m - com_x_target)^2
+    Default k_x = 0.001 s/m^2, target = 0.0 m (reference origin).
+    """
+    p = unpack_params(params)
+    delta = p["com_x_m"] - _COM_X_TARGET_M
+    return _COM_X_PENALTY_K * delta * delta
+
+
 def unpack_params(params: jnp.ndarray) -> dict[str, jnp.ndarray]:
     return {name: params[i] for i, name in enumerate(PARAM_NAMES)}
 
@@ -278,6 +297,7 @@ def initial_state(params: jnp.ndarray, model: SmoothSheetModel) -> tuple[jnp.nda
     t0 = jnp.asarray(0.0, dtype=params.dtype)
     m0 = car_mass_from_time(t0, p["car_weight_kg"], model)
     m_eff0 = m0 + N_WHEELS * p["wheel_moi_kg_m2"] / (R_WHEEL ** 2)
+    # Lift-dependent friction at launch (v=0, so L=0).
     friction0 = p["mu"] * m0 * G
     a0 = (thrust_force(t0, model) - friction0) / m_eff0
 
@@ -309,7 +329,13 @@ def distance_derivatives(
 
     F_thrust = thrust_force(t, model)
     F_drag = p["drag_20_n"] * q_safe / (REFERENCE_SPEED ** 2)
-    F_fric = p["mu"] * m * G
+    # Lift-dependent friction: L(v) = lift_20_n * v^2 / 20^2
+    # Normal force: N = m*g - L(v)  (downforce reduces normal force)
+    # Friction: F_fric = mu * N = mu * (m*g - L(v))
+    v_sq = q_safe  # q = v^2
+    L_v = p["lift_20_n"] * v_sq / (REFERENCE_SPEED ** 2)
+    F_normal = m * G - L_v
+    F_fric = p["mu"] * F_normal
 
     a = (F_thrust - F_drag - F_fric) / m_eff
 
@@ -371,8 +397,9 @@ def race_time_seconds(params: jnp.ndarray, model: SmoothSheetModel) -> jnp.ndarr
     low_speed_penalty = 0.05 * _smooth_positive(0.01 - q_safe_finish, scale=1e-4)
 
     com_penalty = com_height_time_penalty(params)
+    com_x_pen = com_x_time_penalty(params)
 
-    return p["time_coefficient"] * (t_finish + low_speed_penalty + com_penalty)
+    return p["time_coefficient"] * (t_finish + low_speed_penalty + com_penalty + com_x_pen)
 
 
 def race_value_and_grad(params: np.ndarray, model: SmoothSheetModel) -> tuple[float, dict[str, float]]:
@@ -398,6 +425,8 @@ def finite_difference_check(
         "wheel_moi_kg_m2": 1e-11,
         "time_coefficient": 1e-5,
         "com_height_m": 1e-6,
+        "lift_20_n": 1e-5,
+        "com_x_m": 1e-6,
     }
 
     for i, name in enumerate(PARAM_NAMES):
@@ -435,6 +464,8 @@ def make_param_vector(
     wheel_moi_g_mm2: float,
     time_coefficient_percent: float = 100.0,
     com_height_mm: float = 30.0,
+    lift_20_n: float = 0.0,
+    com_x_mm: float = 0.0,
 ) -> np.ndarray:
     """Helper matching the old script's user-facing units."""
     return np.array(
@@ -445,6 +476,8 @@ def make_param_vector(
             wheel_moi_g_mm2 * 1e-9,
             time_coefficient_percent / 100.0,
             com_height_mm / 1000.0,
+            lift_20_n,
+            com_x_mm / 1000.0,
         ],
         dtype=np.float64,
     )
@@ -466,6 +499,8 @@ def main() -> None:
         wheel_moi_g_mm2=float(input("Enter wheel MOI (g·mm^2): ")),
         time_coefficient_percent=float(input("Enter Time Coefficient (in %) [100 = unchanged]: ") or "100"),
         com_height_mm=float(input("Enter COM height (mm) [30 = ideal]: ") or "30"),
+        lift_20_n=float(input("Enter lift force at 20 m/s (N) [0 = none]: ") or "0"),
+        com_x_mm=float(input("Enter COM x position (mm) [0 = reference]: ") or "0"),
     )
 
     T, grads = race_value_and_grad(params, model)

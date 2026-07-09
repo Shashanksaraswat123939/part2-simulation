@@ -12,7 +12,7 @@ from race_objective import BuildSettings, build_smooth_sheet_model, race_value_a
 from race_objective_adapter import adapt_gradients, race_value_and_grad_guarded
 
 
-EXPECTED_HASH = "575636fc3d97c96fe9294a417713227cd2ae992f67123643bc15ed5a5064a30f"
+EXPECTED_HASH = "6ed47bb624245e85d67a3fb6dd196b4b69fe2debc39725fac8c9614aec404358"
 
 
 def _synthetic_csv():
@@ -32,7 +32,7 @@ def _synthetic_csv():
     return f.name
 
 
-def _model_and_params(com_height_m=0.040, time_coefficient=1.0):
+def _model_and_params(com_height_m=0.040, time_coefficient=1.0, lift_20_n=0.5, com_x_m=0.005):
     path = _synthetic_csv()
     try:
         model = build_smooth_sheet_model(
@@ -41,7 +41,7 @@ def _model_and_params(com_height_m=0.040, time_coefficient=1.0):
         )
     finally:
         Path(path).unlink(missing_ok=True)
-    params = np.array([1.0, 0.050, 0.02, 1e-7, time_coefficient, com_height_m], dtype=np.float64)
+    params = np.array([1.0, 0.050, 0.02, 1e-7, time_coefficient, com_height_m, lift_20_n, com_x_m], dtype=np.float64)
     return model, params
 
 
@@ -55,18 +55,33 @@ def test_adapt_gradients_key_mapping():
     model, params = _model_and_params()
     _T_raw, _T_penalized, raw = race_value_and_grad_guarded(params, model)
     adapted = raw
-    assert set(adapted) == {"dT_dD20", "dT_dmass", "dT_dh_com", "dT_dx_com"}
+    assert set(adapted) == {"dT_dD20", "dT_dmass", "dT_dh_com", "dT_dx_com", "dT_dL"}
     # Verify the adapter correctly maps locked-file gradient keys
     _value, locked_grads = race_value_and_grad(params, model)
     assert adapted["dT_dD20"] == locked_grads["drag_20_n"]
     assert adapted["dT_dmass"] == locked_grads["car_weight_kg"]
-    assert adapted["dT_dx_com"] == 0.0
+    assert adapted["dT_dx_com"] != 0.0  # now non-zero with com_x penalty
 
 
 def test_dT_dh_com_is_now_nonzero():
     model, params = _model_and_params(com_height_m=0.040)
     _T_raw, _T_penalized, adapted = race_value_and_grad_guarded(params, model)
     assert adapted["dT_dh_com"] != 0.0
+
+
+def test_dT_dL_is_nonzero():
+    """Lift gradient must be non-zero now that lift-dependent friction is modeled."""
+    model, params = _model_and_params(lift_20_n=0.5)
+    _T_raw, _T_penalized, adapted = race_value_and_grad_guarded(params, model)
+    assert "dT_dL" in adapted
+    assert adapted["dT_dL"] != 0.0
+
+
+def test_dT_dx_com_is_nonzero():
+    """Fore-aft COM gradient must be non-zero now that com_x penalty is modeled."""
+    model, params = _model_and_params(com_x_m=0.005)
+    _T_raw, _T_penalized, adapted = race_value_and_grad_guarded(params, model)
+    assert adapted["dT_dx_com"] != 0.0
 
 
 def test_time_coefficient_guard_blocks_non_unity():
@@ -92,13 +107,13 @@ def test_returns_three_tuple_T_raw_T_penalized_gradients():
     assert isinstance(T_penalized, float)
     assert isinstance(gradients, dict)
     assert T_penalized > T_raw, "T_penalized must include COM penalty above T_raw"
-    assert set(gradients) == {"dT_dD20", "dT_dmass", "dT_dh_com", "dT_dx_com"}
+    assert set(gradients) == {"dT_dD20", "dT_dmass", "dT_dh_com", "dT_dx_com", "dT_dL"}
 
 
 def test_T_raw_at_target_com_equals_T_penalized():
     """When COM height is exactly at the 30mm target, COM penalty is ~0,
     so T_raw ≈ T_penalized."""
-    model, params = _model_and_params(com_height_m=0.030)
+    model, params = _model_and_params(com_height_m=0.030, com_x_m=0.0)
     T_raw, T_penalized, _grads = race_value_and_grad_guarded(params, model)
     assert abs(T_penalized - T_raw) < 1e-6, (
         f"COM penalty at target should be ~0, got diff {T_penalized - T_raw}"
@@ -108,7 +123,7 @@ def test_T_raw_at_target_com_equals_T_penalized():
 def test_negative_mass_rejected():
     """Negative car_weight_kg must raise ValueError, not produce garbage."""
     model, _ = _model_and_params()
-    params = np.array([12.0, -0.050, 0.02, 1e-7, 1.0, 0.040], dtype=np.float64)
+    params = np.array([12.0, -0.050, 0.02, 1e-7, 1.0, 0.040, 0.5, 0.005], dtype=np.float64)
     try:
         race_value_and_grad_guarded(params, model)
     except ValueError:
@@ -119,7 +134,7 @@ def test_negative_mass_rejected():
 def test_negative_mu_rejected():
     """Negative mu must raise ValueError."""
     model, _ = _model_and_params()
-    params = np.array([12.0, 0.050, -0.05, 1e-7, 1.0, 0.040], dtype=np.float64)
+    params = np.array([12.0, 0.050, -0.05, 1e-7, 1.0, 0.040, 0.5, 0.005], dtype=np.float64)
     try:
         race_value_and_grad_guarded(params, model)
     except ValueError:
@@ -130,7 +145,7 @@ def test_negative_mu_rejected():
 def test_negative_drag_rejected():
     """Negative D20 must raise ValueError."""
     model, _ = _model_and_params()
-    params = np.array([-12.0, 0.050, 0.02, 1e-7, 1.0, 0.040], dtype=np.float64)
+    params = np.array([-12.0, 0.050, 0.02, 1e-7, 1.0, 0.040, 0.5, 0.005], dtype=np.float64)
     try:
         race_value_and_grad_guarded(params, model)
     except ValueError:

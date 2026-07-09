@@ -52,7 +52,7 @@ def _model(force_scale=1.0):
 
 
 def _params(D20=12.0, mu=0.02):
-    return np.array([D20, 0.050, mu, 1e-7, 1.0, 0.040], dtype=np.float64)
+    return np.array([D20, 0.050, mu, 1e-7, 1.0, 0.040, 0.5, 0.005], dtype=np.float64)
 
 
 def test_gradient_bundle_always_has_all_five_keys():
