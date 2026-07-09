@@ -19,7 +19,10 @@ from mass_com_ingest import COM_SANITY_BOUNDS_M
 from race_objective import (
     PARAM_NAMES,
     _COM_PENALTY_DATA_MM,
+    _clean_csv_arrays,
+    BuildSettings,
     COM_TARGET_HEIGHT_M,
+    build_smooth_sheet_model,
     com_height_time_penalty,
     com_x_time_penalty,
     race_value_and_grad,
@@ -167,3 +170,67 @@ def race_value_and_grad_guarded(param_vector, model):
     tc = float(param_vector[PARAM_NAMES.index("time_coefficient")])
     T_raw = T_penalized - tc * (com_h_penalty + com_x_pen)
     return T_raw, T_penalized, adapt_gradients(raw_grads)
+
+
+def build_smooth_sheet_model_guarded(csv_path: str, settings) -> object:
+    """Guarded wrapper around locked build_smooth_sheet_model.
+
+    Validates BuildSettings before calling the locked function so that
+    invalid n_basis or n_steps are caught early with a clear error message,
+    rather than failing deep inside the RBF interpolation with a cryptic error.
+
+    Args:
+        csv_path: path to thrust CSV file.
+        settings: race_objective.BuildSettings instance.
+
+    Returns:
+        Locked SmoothSheetModel instance.
+
+    Raises:
+        ValueError if n_basis < 1 or n_steps < 1.
+    """
+    from race_objective import build_smooth_sheet_model
+    if settings.n_basis < 1:
+        raise ValueError(
+            f"BuildSettings.n_basis must be >= 1, got {settings.n_basis}"
+        )
+    if settings.n_steps < 1:
+        raise ValueError(
+            f"BuildSettings.n_steps must be >= 1, got {settings.n_steps}"
+        )
+    return build_smooth_sheet_model(csv_path, settings)
+
+
+def validate_thrust_csv_physical_sanity(csv_path: str) -> None:
+    """Check thrust CSV for physically impossible data.
+
+    Calls race_objective._clean_csv_arrays to parse the CSV, then checks:
+      - No negative time values
+      - No negative force values
+      - No non-positive mass values
+
+    This catches corrupt test data that _clean_csv_arrays would accept
+    (it validates formatting but not physical sanity), preventing
+    meaningless objective values from being computed.
+
+    Args:
+        csv_path: path to thrust CSV file.
+
+    Raises:
+        ValueError if any physical sanity check fails.
+        FileNotFoundError if csv_path doesn't exist.
+    """
+    from race_objective import _clean_csv_arrays
+    t, force, mass = _clean_csv_arrays(csv_path)
+    if any(ti < 0 for ti in t):
+        raise ValueError(
+            f"Thrust CSV {csv_path} contains negative time values"
+        )
+    if any(fi < 0 for fi in force):
+        raise ValueError(
+            f"Thrust CSV {csv_path} contains negative force values"
+        )
+    if any(mi <= 0 for mi in mass):
+        raise ValueError(
+            f"Thrust CSV {csv_path} contains non-positive mass values"
+        )
