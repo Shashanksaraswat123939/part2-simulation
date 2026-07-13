@@ -153,22 +153,27 @@ def race_value_and_grad_guarded(param_vector, model):
     _assert_physical_inputs(param_vector)
     T_penalized, raw_grads = race_value_and_grad(param_vector, model)
     params_jax = jnp.asarray(param_vector, dtype=jnp.float64)
-    com_h_penalty = float(com_height_time_penalty(params_jax))
-    com_x_pen = float(com_x_time_penalty(params_jax))
-    # Guard: the fitted COM penalty polynomial goes slightly negative near
-    # delta≈0.61mm (a polyfit artifact). Clamp to >= 0 so T_raw <= T_penalized
-    # always holds. The magnitude is ~29 microseconds but must not invert the
-    # T_raw/T_penalized relationship.
-    com_h_penalty = max(com_h_penalty, 0.0)
-    com_x_pen = max(com_x_pen, 0.0)
-    # NOTE: T_raw = T_penalized - com_penalty is only correct because the
-    # adapter guards time_coefficient == 1.0. The locked file computes
-    # T_penalized = tc * (t_finish + low_speed_penalty + com_h_penalty + com_x_pen),
-    # so the correct general formula would be:
-    #   T_raw = T_penalized - tc * (com_h_penalty + com_x_pen)
-    # If the time_coefficient guard is ever removed, this MUST be updated.
+
+    # P2-3: subtract the UNCLAMPED penalty to recover T_raw exactly.
+    # The locked polynomial dips negative near delta≈0.411mm (polyfit artifact,
+    # min ≈ -37.9 µs). Clamping to 0 before subtraction left up to 37.9 µs of
+    # polyfit artifact in T_raw; subtracting the raw (possibly negative) value
+    # recovers the exact dynamics-only time regardless of the artifact's sign.
+    com_h_penalty_raw = float(com_height_time_penalty(params_jax))
+
+    # P2-2: com_x_time_penalty uses fabricated physics:
+    #   target x_com = 0.0 (= front axle, not a physical COM target),
+    #   k_x = 0.001 s/m² which yields 1e-9 s/mm² not the 1 ms/mm² the comment claims.
+    # Zero this term until ballast experiment provides real data and a real target.
+    # ? UNRESOLVED: replace 0.0 with float(com_x_time_penalty(params_jax)) once
+    # race_objective.py is re-locked with a measured target and correct k_x.
+    com_x_pen_raw = 0.0
+
+    # NOTE: T_raw = T_penalized - tc*(com_h + com_x) is only correct because the
+    # adapter guards time_coefficient == 1.0. If that guard is ever removed this
+    # formula must use the general: T_raw = T_penalized/tc - non-dynamic terms.
     tc = float(param_vector[PARAM_NAMES.index("time_coefficient")])
-    T_raw = T_penalized - tc * (com_h_penalty + com_x_pen)
+    T_raw = T_penalized - tc * (com_h_penalty_raw + com_x_pen_raw)
     return T_raw, T_penalized, adapt_gradients(raw_grads)
 
 

@@ -66,6 +66,15 @@ def _read_ascii_stl_triangles(stl_path: str) -> list[tuple[tuple[float, float, f
             vertices.append(tuple(float(v) for v in parts[1:4]))
     if len(vertices) % 3 != 0 or not vertices:
         raise CFDRunError("STL does not contain a valid triangle vertex list")
+    # Enforce right-half-only contract (SPEC §16): all vertices must have y >= -1e-6.
+    # A full-car STL fed here would double forces silently via to_full_car() — P2-1.
+    min_y = min(v[1] for v in vertices)
+    if min_y < -1e-6:
+        raise CFDRunError(
+            f"Half-car STL has vertex with y={min_y:.6f} < -1e-6. "
+            "Expected right-half only (y >= 0). Part 1 must export a right-half STL; "
+            "a full-car STL would silently double aerodynamic forces."
+        )
     return [tuple(vertices[i:i + 3]) for i in range(0, len(vertices), 3)]
 
 
