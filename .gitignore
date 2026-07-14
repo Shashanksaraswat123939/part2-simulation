@@ -17,3 +17,6 @@ candidates/
 *.npy
 cfd_case_*/
 *.foam
+
+# OpenFOAM run directories (generated locally, never committed)
+cfd_case_template/runs/

@@ -70,7 +70,7 @@ def test_end_to_end_pipeline_with_mocks():
     stl_path = write_tetrahedron()
     csv_path = write_thrust_csv()
     original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir: {
+    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: {
         "D20_half": 5.0,
         "L_half": 1.0,
         "A_half": 0.01,

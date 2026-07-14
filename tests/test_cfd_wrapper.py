@@ -81,7 +81,7 @@ def test_non_watertight_stl_raises():
 
 def test_watertight_tetrahedron_passes_manifold_check():
     original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir: _fake_dict()
+    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: _fake_dict()
     path = _tetrahedron_path()
     try:
         half, health = run_half_car_cfd(path)
@@ -98,7 +98,7 @@ def test_watertight_tetrahedron_passes_manifold_check():
 
 def test_negative_volume_cells_raises():
     original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir: _fake_dict(
+    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: _fake_dict(
         negative_volume_cells=1
     )
     path = _tetrahedron_path()
@@ -115,7 +115,7 @@ def test_negative_volume_cells_raises():
 
 def test_non_convergence_does_not_raise_but_flags_health_report():
     original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir: _fake_dict(
+    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: _fake_dict(
         residual_final=1e-2
     )
     path = _tetrahedron_path()
@@ -130,7 +130,7 @@ def test_non_convergence_does_not_raise_but_flags_health_report():
 
 def test_determinism_of_dict_to_dataclass_packaging():
     original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir: _fake_dict()
+    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: _fake_dict()
     path = _tetrahedron_path()
     try:
         half_1, health_1 = run_half_car_cfd(path)

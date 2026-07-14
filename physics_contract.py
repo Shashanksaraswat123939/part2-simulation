@@ -59,6 +59,15 @@ AIR_DENSITY_KGM3: float = 1.225            # kg/m^3
 GRAVITY_MPS2: float = 9.81                 # m/s^2
 TRACK_LENGTH_M: float = 20.0               # m, regulation race distance
 
+# Center of rotation the CFD pitching moment is reported about (SPEC "pitching
+# moment about car reference point"). Part 1 emits the STL in world coordinates
+# with x=0 at the nose tip on the ground plane, so (0,0,0) is that point. This
+# is the single source of truth for the OpenFOAM forces/forceCoeffs CofR and
+# for any later Cm convention — closes audit P2-12 ("moment reference pinned
+# nowhere"). It is a documented convention, not a physical claim; if the team
+# later prefers the front axle or mid-wheelbase, change it here only.
+MOMENT_REFERENCE_POINT_M: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
 # time_coefficient is FROZEN. It must never be exposed as a callable
 # parameter anywhere in Part 2 (see Stage 6). Any code that needs it reads
 # this constant directly; nothing may accept it as a function argument.

@@ -6,7 +6,8 @@ TEST_DIR = Path(__file__).resolve().parent / "tests"  # tests live in tests/ sub
 tests = [
     'test_physics_contract', 'test_mass_com_ingest', 'test_cfd_wrapper',
     'test_mesh_validation', 'test_calibration', 'test_candidate_record',
-    'test_race_objective_adapter', 'test_adjoint_contract', 'test_integration_end_to_end'
+    'test_race_objective_adapter', 'test_adjoint_contract', 'test_integration_end_to_end',
+    'test_openfoam_case', 'test_openfoam_adjoint'
 ]
 total_p, total_f = 0, 0
 any_infra_failure = False
