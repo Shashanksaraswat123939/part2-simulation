@@ -18,9 +18,11 @@ project memory / conversation history for that run's output. These tests
 cover the pure functions only.
 """
 
+import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -267,18 +269,33 @@ def test_map_sensitivity_raises_when_vertex_unmatched():
 
 
 def test_find_openfoam_bashrc_missing_returns_none_reused_from_case_module():
-    assert oa.oc.find_openfoam_bashrc("/definitely/not/real") is None
+    # search_roots=[] + cleared env vars (2026-07-16 fix): see
+    # test_openfoam_case.py's identical fix for why an invalid explicit path
+    # alone is not sufficient on a machine with real ESI OpenFOAM installed.
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("FOAM_BASHRC", None)
+        os.environ.pop("WM_PROJECT_DIR", None)
+        assert oa.oc.find_openfoam_bashrc("/definitely/not/real", search_roots=[]) is None
 
 
 def test_invoke_adjoint_raises_when_openfoam_absent():
+    # search_roots=[] + cleared env vars: without this, on a machine with
+    # real ESI OpenFOAM installed, invoke_adjoint() silently finds it and
+    # launches a genuine primal+adjoint solve instead of raising (same class
+    # of bug as test_openfoam_case.py's invoke() test, fixed 2026-07-16).
     stl = _write_stl([((0, 0, 0), (1, 0, 0), (0, 1, 0))])
     try:
         with tempfile.TemporaryDirectory() as d:
-            try:
-                oa.invoke_adjoint(stl, d, bashrc="/definitely/not/real")
-            except oa.oc.OpenFOAMNotFoundError:
-                return
-            raise AssertionError("expected OpenFOAMNotFoundError")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("FOAM_BASHRC", None)
+                os.environ.pop("WM_PROJECT_DIR", None)
+                try:
+                    oa.invoke_adjoint(
+                        stl, d, bashrc="/definitely/not/real", search_roots=[]
+                    )
+                except oa.oc.OpenFOAMNotFoundError:
+                    return
+                raise AssertionError("expected OpenFOAMNotFoundError")
     finally:
         Path(stl).unlink(missing_ok=True)
 

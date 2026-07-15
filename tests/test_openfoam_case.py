@@ -6,9 +6,11 @@ force/moment/y+ parsers (against crafted ESI-format fixtures). The actual
 subprocess solve is exercised on a machine with ESI OpenFOAM installed.
 """
 
+import os
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -270,18 +272,42 @@ def test_laminar_case_has_no_turbulence_fields():
 
 
 def test_find_bashrc_missing_returns_none():
-    assert oc.find_openfoam_bashrc("/definitely/not/a/real/bashrc") is None
+    # search_roots=[] disables the common-install-root fallback scan --
+    # required for this to be deterministic (2026-07-16 fix): an invalid
+    # explicit path alone does NOT guarantee "not found", since discovery
+    # falls through to $WM_PROJECT_DIR / $FOAM_BASHRC / common roots. On any
+    # machine that actually has ESI OpenFOAM installed (e.g. this one), the
+    # old version of this test silently found the real environment instead
+    # of testing the "absent" case at all.
+    with mock.patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("FOAM_BASHRC", None)
+        os.environ.pop("WM_PROJECT_DIR", None)
+        assert oc.find_openfoam_bashrc(
+            "/definitely/not/a/real/bashrc", search_roots=[]
+        ) is None
 
 
 def test_invoke_raises_when_openfoam_absent():
+    # search_roots=[] + cleared env vars: see test_find_bashrc_missing_returns_none.
+    # Without this, on a machine with real ESI OpenFOAM installed, invoke()
+    # silently finds it and launches a genuine multi-stage solve instead of
+    # raising -- verified live, 2026-07-16 (a ~15-minute simpleFoam run got
+    # triggered by this exact test before the fix, on a machine where
+    # OpenFOAM had just been set up).
     stl = _write_stl(_PANELS)
     try:
         with tempfile.TemporaryDirectory() as d:
-            try:
-                oc.invoke(stl, d, bashrc="/definitely/not/a/real/bashrc")
-            except oc.OpenFOAMNotFoundError:
-                return
-            raise AssertionError("expected OpenFOAMNotFoundError")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("FOAM_BASHRC", None)
+                os.environ.pop("WM_PROJECT_DIR", None)
+                try:
+                    oc.invoke(
+                        stl, d, bashrc="/definitely/not/a/real/bashrc",
+                        search_roots=[],
+                    )
+                except oc.OpenFOAMNotFoundError:
+                    return
+                raise AssertionError("expected OpenFOAMNotFoundError")
     finally:
         Path(stl).unlink(missing_ok=True)
 

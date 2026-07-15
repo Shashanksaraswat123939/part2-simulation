@@ -58,7 +58,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -601,6 +601,7 @@ def invoke_adjoint(
     case_dir: str,
     cfg: Optional[AdjointRunConfig] = None,
     bashrc: Optional[str] = None,
+    search_roots: Optional[Sequence[str]] = None,
 ) -> np.ndarray:
     """Full adjoint pipeline: build case, run primal+adjoint, parse
     sensitivity, map onto the original STL's vertex order.
@@ -609,11 +610,16 @@ def invoke_adjoint(
     dD20_half/dSurface sensitivity array. Applying the project's objective
     weight (w_D20) and ADJOINT_HALF_CAR_SCALING is the caller's job
     (cfd_wrapper.run_half_car_adjoint) — see module docstring for why.
-    """
+
+    search_roots: passed through to oc.find_openfoam_bashrc -- pass [] to
+    force "not found" deterministically in tests regardless of what's
+    actually installed on the host (see find_openfoam_bashrc's docstring;
+    an invalid bashrc= alone is NOT sufficient, since discovery falls back
+    to real install roots on any machine that has ESI OpenFOAM)."""
     import os
 
     cfg = cfg or AdjointRunConfig()
-    resolved_bashrc = oc.find_openfoam_bashrc(bashrc)
+    resolved_bashrc = oc.find_openfoam_bashrc(bashrc, search_roots=search_roots)
     if resolved_bashrc is None:
         raise oc.OpenFOAMNotFoundError(
             "No ESI OpenFOAM environment found for the adjoint solve. Set "

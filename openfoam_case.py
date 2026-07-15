@@ -38,7 +38,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 # Air properties at ~15 °C. nu = mu / rho; kept explicit so a caller varying
 # air_density also gets a matching viscosity if they compute it.
@@ -109,12 +109,31 @@ class OpenFOAMNotFoundError(RuntimeError):
 # Environment discovery
 # ---------------------------------------------------------------------------
 
-def find_openfoam_bashrc(explicit: Optional[str] = None) -> Optional[str]:
+_DEFAULT_BASHRC_SEARCH_ROOTS = ("/usr/lib/openfoam", "/opt", os.path.expanduser("~"))
+
+
+def find_openfoam_bashrc(
+    explicit: Optional[str] = None,
+    search_roots: Optional[Sequence[str]] = None,
+) -> Optional[str]:
     """Locate an ESI OpenFOAM etc/bashrc.
 
     Order: explicit arg → $FOAM_BASHRC → derived from $WM_PROJECT_DIR →
     common install roots. Returns the path or None (never raises), so callers
     can decide whether a missing install is fatal.
+
+    IMPORTANT for tests: an invalid `explicit` path does NOT disable the
+    later fallback candidates -- it's just one candidate among several, by
+    design (a caller can suggest a path that doesn't happen to exist and
+    still get a real environment from $WM_PROJECT_DIR or a common install
+    root). This means "pass an obviously-fake bashrc path" is NOT a
+    reliable way to simulate "no OpenFOAM available" on a machine that
+    actually has ESI OpenFOAM installed -- verified live, 2026-07-16: a
+    test doing exactly that silently found the real local install and
+    triggered a genuine multi-hour simpleFoam run instead of testing the
+    absent-environment path at all. Pass `search_roots=[]` (and clear
+    $FOAM_BASHRC/$WM_PROJECT_DIR) to deterministically force "not found"
+    regardless of what's actually installed on the host.
     """
     candidates: list[str] = []
     if explicit:
@@ -126,7 +145,9 @@ def find_openfoam_bashrc(explicit: Optional[str] = None) -> Optional[str]:
     if wm:
         candidates.append(os.path.join(wm, "etc", "bashrc"))
     # Common ESI install roots (Linux packages, Docker images, module installs).
-    for root in ("/usr/lib/openfoam", "/opt", os.path.expanduser("~")):
+    if search_roots is None:
+        search_roots = _DEFAULT_BASHRC_SEARCH_ROOTS
+    for root in search_roots:
         if not os.path.isdir(root):
             continue
         try:
@@ -894,15 +915,20 @@ def _read_yplus(run_dir: str, solver_log: str) -> str:
 
 
 def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None,
-           bashrc: Optional[str] = None) -> dict:
+           bashrc: Optional[str] = None,
+           search_roots: Optional[Sequence[str]] = None) -> dict:
     """Full pipeline: build case, run stages, parse, return the contract dict.
 
     Raises OpenFOAMNotFoundError if no ESI environment is found (cfd_wrapper
     turns that into a CFDRunError → 'CFD_failed'). All returned quantities are
     half-car (D20_half, L_half, A_half, pitching_moment_half) plus health.
+
+    search_roots: passed through to find_openfoam_bashrc -- pass [] to force
+    "not found" deterministically in tests, regardless of what's actually
+    installed on the host (see find_openfoam_bashrc's docstring).
     """
     cfg = cfg or OpenFOAMRunConfig()
-    resolved_bashrc = find_openfoam_bashrc(bashrc)
+    resolved_bashrc = find_openfoam_bashrc(bashrc, search_roots=search_roots)
     if resolved_bashrc is None:
         raise OpenFOAMNotFoundError(
             "No ESI OpenFOAM environment found. Set $WM_PROJECT_DIR or "
