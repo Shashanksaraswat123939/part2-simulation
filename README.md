@@ -1,5 +1,11 @@
 # Part 2 Simulation
 
+> 📐 **Whole-project architecture:** see [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
+> Part 2 owns the physics: the locked JAX race objective, the OpenFOAM CFD wrapper
+> (forward `simpleFoam` + adjoint `adjointOptimisationFoam`), the half-car
+> contract, and mass/COM ingest. (Note: the CFD/adjoint wrappers are now REAL —
+> some older audit notes in this folder describe an earlier stub.)
+
 This repository contains the second-stage simulation and optimization layer for a small race-car CFD workflow. It connects physical unit contracts, mass and center-of-mass data, CFD result validation, calibration models, a differentiable race objective, adjoint weights, and candidate-result storage.
 
 The implementation is intentionally defensive: invalid geometry, impossible physical values, unsupported calibration inputs, failed CFD runs, and unresolved model assumptions are surfaced explicitly instead of being silently accepted.
