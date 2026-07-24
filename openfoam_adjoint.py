@@ -80,7 +80,16 @@ class AdjointRunConfig:
     primal_iters: int = 1000
     adjoint_iters: int = 1000
     resolution: str = "medium"
+    # ⚠ Keep at 1. The MPI branch of run_adjoint_stages runs, but the
+    # sensitivity readback does not survive it: read_polymesh_points() reads
+    # constant/polyMesh/points, which under -parallel is still the SERIAL
+    # BACKGROUND blockMesh (snappy writes processor*/constant/polyMesh), so
+    # parse_sensitivity_points raises "N values but M points". invoke_adjoint
+    # enforces this rather than letting it fail hours in. The forward solve
+    # (openfoam_case) has no such coupling and can use MPI freely.
     n_subdomains: int = 1
+    underbody_refinement_level: int = 1
+    stage_timeout_s: int = 14400
     keep_run_dir: bool = False
     # Nearest-neighbour matches beyond this distance (m) from any original STL
     # vertex are treated as unmapped and raise, rather than silently pairing
@@ -97,6 +106,15 @@ class AdjointRunConfig:
             raise ValueError("reference_speed_mps must be > 0")
         if self.primal_iters <= 0 or self.adjoint_iters <= 0:
             raise ValueError("primal_iters and adjoint_iters must be > 0")
+        if self.n_subdomains != 1:
+            raise ValueError(
+                "AdjointRunConfig.n_subdomains must be 1: the surfacePoints "
+                "sensitivity readback reads constant/polyMesh/points, which "
+                "under -parallel is the background blockMesh, not the snapped "
+                "mesh the sensitivity field is defined on. Fix "
+                "read_polymesh_points (reconstructParMesh) before enabling MPI "
+                "here. The FORWARD solve is unaffected and may use MPI."
+            )
 
     def as_forward_config(self) -> oc.OpenFOAMRunConfig:
         """Adapts this config to openfoam_case.OpenFOAMRunConfig so the
@@ -121,7 +139,10 @@ def build_adjoint_ras_properties() -> str:
     """Verified against tutorials/incompressible/adjointOptimisationFoam/
     shapeOptimisation/naca0012/kOmegaSST/lift/constant/adjointRASProperties —
     unlike the SA pairing, kOmegaSST needs no extra coeffs sub-dict here."""
-    return oc._header("dictionary", "adjointTurbulenceProperties") + """
+    # object name must match the FILENAME the dict is written to
+    # (constant/adjointRASProperties), or a strict IOdictionary read can reject
+    # it. It said "adjointTurbulenceProperties" before.
+    return oc._header("dictionary", "adjointRASProperties") + """
 adjointRASModel adjointkOmegaSST;
 
 adjointTurbulence on;
@@ -130,7 +151,9 @@ adjointTurbulence on;
 
 def build_adjoint_control_dict(cfg: AdjointRunConfig) -> str:
     end_time = cfg.primal_iters + cfg.adjoint_iters
-    write_interval = max(cfg.primal_iters, 1)
+    # writeFormat MUST stay ascii here (unlike the forward case, which is now
+    # binary): _parse_foam_scalar_list reads the pointSensNormal* field as text.
+    # writeControl onEnd, because only the final sensitivity field is read.
     return oc._header("dictionary", "controlDict") + f"""
 application     adjointOptimisationFoam;
 startFrom       startTime;
@@ -138,9 +161,8 @@ startTime       0;
 stopAt          endTime;
 endTime         {end_time};
 deltaT          1;
-writeControl    timeStep;
-writeInterval   {write_interval};
-purgeWrite      2;
+writeControl    onEnd;
+purgeWrite      0;
 writeFormat     ascii;
 writePrecision  8;
 writeCompression off;
@@ -150,17 +172,45 @@ runTimeModifiable true;
 """
 
 
+# Sensitivity type name written into optimisationDict, and the suffix the
+# solver appends to the output field name. In ESI v2112+ the old
+# `sensitivitySurfacePoints` family was replaced by ESI/FI/SI, and the written
+# pointScalarField is "pointSensNormal" + <adjointSolverName> + <type()>.
+#
+# This is pinned to the observed output filename `pointSensNormaladjS1ESI`
+# (adjoint solver `adjS1`, type `ESI`) rather than to documentation — that
+# filename is the one piece of ground truth we have from a real run, and it is
+# ALSO what caught the previous bug: the dict asked for `surfacePoints` while
+# the reader expected an `...ESI` file, so the two could never have agreed.
+SENSITIVITY_TYPE = "ESI"
+
+
 def build_optimisation_dict(cfg: AdjointRunConfig, ref_area_half: float) -> str:
     """`singleRun` manager: one primal solve (kOmegaSST) then one adjoint
     solve (adjointkOmegaSST), objective = raw drag force (weight 1 — see
     module docstring for why the business weight is applied in Python, not
     here). residualControl includes k/omega (primal) and ka/wa (adjoint) —
     verified against sbend/turbulent/kOmegaSST/opt, which is the only shipped
-    example with the k/omega transport equations actually solved (the
-    naca0012 case's residual entries were not fully shown). sensitivityType
-    is `surfacePoints` only (the reference tutorials also compute smoothed
-    face-based variants for comparison; we only need the per-point one to
-    match Part 1's per-vertex contract)."""
+    example with the k/omega transport equations actually solved.
+
+    ⚠ SCHEMA — the one thing in this file that cannot be verified without a
+    live OpenFOAM. Targeting ESI **v2412**. Two things changed here in the
+    2026-07-24 audit, both of which would have made every adjoint solve fail:
+
+      1. `computeSensitivities true;` was MISSING from the adjoint solver.
+         Without it the solver runs to completion and writes no sensitivity
+         field at all — find_sensitivity_file would then raise FileNotFoundError
+         after a multi-hour solve.
+      2. The sensitivity request was `optimisation { designVariables {
+         sensitivityType surfacePoints; ... } }`. `designVariables` requires a
+         `type` entry (v2112+), which was absent, and `surfacePoints` is the
+         pre-v2112 type name. For a singleRun sensitivity map the block is
+         `optimisation { sensitivities { type ESI; ... } }`.
+
+    Run `preflight_adjoint_schema()` on the VM before the first solve — it
+    diffs this against the installed release's own shipped tutorial and is the
+    5-minute way to settle any residual doubt.
+    """
     aref = max(ref_area_half, 1e-9)
     u = cfg.reference_speed_mps
     rho = cfg.air_density_kgm3
@@ -202,6 +252,7 @@ adjointManagers
                 active                 true;
                 type                   incompressible;
                 solver                 adjointSimple;
+                computeSensitivities   true;
 
                 objectives
                 {{
@@ -245,13 +296,18 @@ adjointManagers
 
 optimisation
 {{
-    designVariables
+    sensitivities
     {{
-        // Only the per-point sensitivity type is requested (the reference
-        // tutorials also compute smoothed face-based variants for
-        // comparison; we skip those -- Part 1's contract wants exactly one
-        // scalar per surface vertex, which surfacePoints gives directly).
-        sensitivityType    surfacePoints;
+        // Sensitivity-map mode: we only want dJ/dSurface. We are NOT letting
+        // OpenFOAM parameterise and move the shape — Part 1's level set does
+        // that — so the shape-design-variable block (which would additionally
+        // need type/shapeType entries for a parameterisation we do not use)
+        // is deliberately absent. A test asserts it stays absent.
+        //
+        // `ESI` writes one scalar per MESH POINT as
+        // pointSensNormal<adjointSolverName>ESI — exactly Part 1's
+        // per-vertex contract after map_sensitivity_to_stl_vertices().
+        type               {SENSITIVITY_TYPE};
         patches            (car);
         adjointEikonalSolver
         {{
@@ -262,6 +318,66 @@ optimisation
     }}
 }}
 """
+
+
+def preflight_adjoint_schema(bashrc: Optional[str] = None) -> dict:
+    """Compare our optimisationDict against the installed release's own shipped
+    adjoint tutorials. Run this ONCE on the VM before the first real solve.
+
+    Everything else in this pipeline can be checked without OpenFOAM; the
+    optimisationDict schema cannot, and it is version-dependent (the
+    designVariables/sensitivities split changed at v2112). Rather than trust a
+    docstring, read the ground truth off the machine that will run it.
+
+    Returns a dict with the tutorial dicts found and the entries we care about,
+    and prints a human-readable report. Never raises for a missing tutorial —
+    a missing tutorial tree is a reason to check by hand, not a crash.
+    """
+    import os as _os
+    import subprocess as _sp
+
+    resolved = oc.find_openfoam_bashrc(bashrc)
+    if resolved is None:
+        raise oc.OpenFOAMNotFoundError(
+            "preflight needs a real ESI OpenFOAM environment to read "
+            "$FOAM_TUTORIALS from."
+        )
+    proc = _sp.run(["bash", "-lc", f"source '{resolved}' && echo $FOAM_TUTORIALS"],
+                   stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, timeout=120)
+    tutorials = proc.stdout.strip().splitlines()[-1].strip() if proc.stdout.strip() else ""
+    report: dict = {"tutorials_root": tutorials, "found": [], "ours": {
+        "block": "sensitivities", "type": SENSITIVITY_TYPE,
+        "computeSensitivities": True,
+    }}
+    if not tutorials or not _os.path.isdir(tutorials):
+        print(f"[preflight] $FOAM_TUTORIALS not usable ({tutorials!r}); check by hand.")
+        return report
+
+    root = Path(tutorials) / "incompressible" / "adjointOptimisationFoam"
+    for dict_path in sorted(root.rglob("system/optimisationDict")):
+        text = dict_path.read_text(encoding="utf-8", errors="replace")
+        entry = {
+            "path": str(dict_path),
+            "has_sensitivities_block": bool(re.search(r"^\s*sensitivities\s*$", text, re.M)),
+            "has_designVariables_block": bool(re.search(r"^\s*designVariables\s*$", text, re.M)),
+            "computeSensitivities": bool(re.search(r"computeSensitivities\s+true", text)),
+            "type_entries": sorted(set(re.findall(r"^\s*(?:sensitivityType|type)\s+(\w+)\s*;", text, re.M))),
+        }
+        report["found"].append(entry)
+
+    print(f"[preflight] {len(report['found'])} shipped optimisationDict(s) under {root}")
+    for e in report["found"]:
+        print(f"  {e['path']}")
+        print(f"    sensitivities-block={e['has_sensitivities_block']} "
+              f"designVariables-block={e['has_designVariables_block']} "
+              f"computeSensitivities={e['computeSensitivities']}")
+        print(f"    type entries: {e['type_entries']}")
+    print(f"[preflight] ours: sensitivities-block, type {SENSITIVITY_TYPE}, "
+          f"computeSensitivities true")
+    print("[preflight] If the shipped dicts disagree, edit build_optimisation_dict "
+          "and SENSITIVITY_TYPE to match THEM — they are the ground truth for "
+          "this install.")
+    return report
 
 
 def _write(path: Path, text: str) -> None:
@@ -380,7 +496,9 @@ def build_adjoint_case(run_dir: str, stl_path: str, cfg: AdjointRunConfig) -> di
 
     _write(run / "system" / "blockMeshDict", oc.build_blockmesh_dict(box_min, box_max, cell_size))
     _write(run / "system" / "snappyHexMeshDict",
-           oc.build_snappy_dict("car.stl", loc, refinement, add_layers=True))
+           oc.build_snappy_dict("car.stl", loc, refinement, add_layers=True,
+                                underbody=oc.underbody_box(bounds),
+                                underbody_extra_levels=cfg.underbody_refinement_level))
     _write(run / "system" / "controlDict", build_adjoint_control_dict(cfg))
     _write(run / "system" / "fvSchemes", _FV_SCHEMES_ADJOINT)
     _write(run / "system" / "fvSolution", _FV_SOLUTION_ADJOINT)
@@ -408,10 +526,12 @@ def build_adjoint_case(run_dir: str, stl_path: str, cfg: AdjointRunConfig) -> di
     }
 
 
-def run_adjoint_stages(run_dir: str, cfg: AdjointRunConfig, bashrc: str, timeout_s: int = 14400) -> dict:
+def run_adjoint_stages(run_dir: str, cfg: AdjointRunConfig, bashrc: str,
+                       timeout_s: Optional[int] = None) -> dict:
     """surfaceFeatureExtract -> blockMesh -> snappyHexMesh -> checkMesh ->
     adjointOptimisationFoam (single invocation runs primal then adjoint,
     per optimisationDict's singleRun manager)."""
+    timeout_s = cfg.stage_timeout_s if timeout_s is None else timeout_s
     run = Path(run_dir)
     oc._run("surfaceFeatureExtract", run, bashrc, "surfaceFeatureExtract.log", timeout_s)
     oc._run("blockMesh", run, bashrc, "blockMesh.log", timeout_s)
@@ -625,8 +745,13 @@ def invoke_adjoint(
             "No ESI OpenFOAM environment found for the adjoint solve. Set "
             "$WM_PROJECT_DIR or $FOAM_BASHRC, or pass bashrc=... ."
         )
-    run_dir = str(Path(case_dir) / "adjoint_runs" / f"run_{os.getpid()}_{abs(hash(stl_path)) % 10_000}")
+    import uuid as _uuid
+
+    # uuid4, not hash(stl_path) % 10_000 — Part 3 runs candidates as threads in
+    # one process, so a hash collision would rmtree a live sibling case.
+    run_dir = str(Path(case_dir) / "adjoint_runs" / f"run_{os.getpid()}_{_uuid.uuid4().hex[:12]}")
     build_adjoint_case(run_dir, stl_path, cfg)
+    succeeded = False
     try:
         run_adjoint_stages(run_dir, cfg, resolved_bashrc)
         sens_file = find_sensitivity_file(run_dir)
@@ -634,12 +759,17 @@ def invoke_adjoint(
         sens_points, sens_values = parse_sensitivity_points(
             sens_file.read_text(encoding="utf-8", errors="replace"), mesh_points
         )
-        return map_sensitivity_to_stl_vertices(
+        out = map_sensitivity_to_stl_vertices(
             stl_path, sens_points, sens_values, cfg.max_point_match_distance_m
         )
+        succeeded = True
+        return out
     finally:
-        if not cfg.keep_run_dir:
+        # Keep the run dir on FAILURE, always — see openfoam_case.invoke.
+        if succeeded and not cfg.keep_run_dir:
             shutil.rmtree(run_dir, ignore_errors=True)
+        elif not succeeded:
+            print(f"[openfoam_adjoint] stage failed — run dir KEPT for diagnosis: {run_dir}")
 
 
 _FV_SCHEMES_ADJOINT = oc._header("dictionary", "fvSchemes") + """

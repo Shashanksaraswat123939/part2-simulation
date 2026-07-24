@@ -36,6 +36,7 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
@@ -67,12 +68,29 @@ class OpenFOAMRunConfig:
     reference_speed_mps: float = 20.0
     air_density_kgm3: float = 1.225
     kinematic_viscosity_m2s: float = _MU_AIR_PA_S / 1.225
-    # "laminar" is the spec baseline (Re ~ 270k, marginal); "kOmegaSST" is the
-    # validation model and the one that grows boundary layers in snappy.
-    turbulence_model: str = "laminar"
+    # kOmegaSST is the default (audit fix 2026-07-24). The old "laminar"
+    # default was not viable: Re = U*L/nu = 20*0.233/1.48e-5 = 3.15e5, where a
+    # laminar steady solve does not settle — residuals stall around 1e-2..1e-3,
+    # and Part 3's require_cfd_convergence gate (residual <= 1e-3) then routes
+    # every iteration to CFD_failed until the candidate dies on 3 consecutive
+    # failures. kOmegaSST also matches openfoam_adjoint, which is hardwired to
+    # it — so the drag VALUE and the shape GRADIENT now come from the same
+    # closure instead of two different ones.
+    turbulence_model: str = "kOmegaSST"
     resolution: str = "medium"
     max_iterations: int = 2000
     n_subdomains: int = 1  # 1 = serial; >1 decomposes with scotch + mpirun
+    # Extra refinement levels (above the surface max level) inside
+    # underbody_box, so the ride-height gap under the car is actually resolved
+    # once lowerWall sits on the track. Each level halves the cell size.
+    # ponytail: +1 gives ~0.6 mm cells in a ~1.6 mm gap at "medium" — about
+    # 2-3 cells across, coarse but not blocked. Raise to 2 (0.30 mm, ~5 cells)
+    # when you want the ground-effect number to be trustworthy rather than
+    # merely present; it costs roughly 8x the cells in that box.
+    underbody_refinement_level: int = 1
+    # Per-stage subprocess timeout. Was hardcoded at 7200 s inside run_stages
+    # with no way to change it; a big case silently burned 2 h and then died.
+    stage_timeout_s: int = 7200
     # Pitching moment is reported about this point (SPEC "pitching moment about
     # car reference point"). Pinned here to close audit P2-12; the STL arrives
     # in Part 1 world coords with x=0 at the nose tip, so (0,0,0) is the nose
@@ -265,15 +283,45 @@ def domain_box(
     bounds: tuple[tuple[float, float, float], tuple[float, float, float]]
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Wind-tunnel box around the car. Upstream 3L, downstream 8L, 5·(h,w)
-    lateral/vertical margins — standard external-aero clearances. y_min is
-    clamped to 0 so the symmetry plane sits exactly on the centreline."""
+    lateral/vertical margins — standard external-aero clearances.
+
+    y_min is clamped to 0 so the symmetry plane sits exactly on the centreline.
+    z_min is clamped to 0 — the TRACK SURFACE — so `lowerWall` is the track the
+    car actually runs on.
+
+    Audit fix (2026-07-24): z_min was `z0 - 4*lz`, which for a real car
+    (min z = 1.6 mm, lz = 63 mm) put the lower wall 252 mm BELOW the track. The
+    car was simulated flying in free air a quarter of a metre off the ground,
+    so ground effect — a first-order term for a 1.5 mm-ride-height dragster
+    (T3.7) — was entirely absent from D20 and L. The gap now has to be meshed;
+    see `underbody_refinement_level` in OpenFOAMRunConfig.
+    """
     (x0, y0, z0), (x1, y1, z1) = bounds
     lx = max(x1 - x0, 1e-6)
     ly = max(y1 - y0, 1e-6)
     lz = max(z1 - z0, 1e-6)
-    box_min = (x0 - 3.0 * lx, 0.0, z0 - 4.0 * lz)
+    box_min = (x0 - 3.0 * lx, 0.0, 0.0)
     box_max = (x1 + 8.0 * lx, y1 + 5.0 * ly, z1 + 5.0 * lz)
     return box_min, box_max
+
+
+def underbody_box(
+    bounds: tuple[tuple[float, float, float], tuple[float, float, float]]
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Refinement box spanning the ride-height gap between track and car floor.
+
+    Now that `lowerWall` sits on the track (see domain_box), the ~1.5 mm gap
+    under the car has to be resolved or the ground-effect flow is simply
+    blocked by cells too big to fit in it — which would be worse physics than
+    the free-air case it replaces. This box covers the whole planform plus a
+    small margin, from the track up to just above the car's lowest point.
+    """
+    (x0, y0, z0), (x1, y1, z1) = bounds
+    margin = 0.05 * max(x1 - x0, 1e-6)
+    # Ride height is z0 (car floor above the track). Cover the gap and as much
+    # again above it, with a 5 mm floor so the box is never degenerate.
+    z_top = max(2.0 * z0, 0.005)
+    return ((x0 - margin, 0.0, -margin), (x1 + margin, y1 + margin, z_top))
 
 
 def location_in_mesh(
@@ -337,8 +385,25 @@ def build_snappy_dict(
     loc: tuple[float, float, float],
     refinement: tuple[int, int],
     add_layers: bool,
+    underbody: Optional[tuple[tuple[float, float, float], tuple[float, float, float]]] = None,
+    underbody_extra_levels: int = 1,
 ) -> str:
     lo, hi = refinement
+    underbody_geometry = ""
+    underbody_region = ""
+    if underbody is not None and underbody_extra_levels > 0:
+        (ux0, uy0, uz0), (ux1, uy1, uz1) = underbody
+        underbody_geometry = f"""
+    underbody
+    {{
+        type searchableBox;
+        min  ({ux0} {uy0} {uz0});
+        max  ({ux1} {uy1} {uz1});
+    }}
+"""
+        underbody_region = (
+            f"underbody {{ mode inside; levels ((1e15 {hi + underbody_extra_levels})); }}"
+        )
     layers_block = ""
     if add_layers:
         layers_block = f"""
@@ -377,7 +442,7 @@ geometry
         type triSurfaceMesh;
         file "{car_stl_name}";
     }}
-}}
+{underbody_geometry}}}
 
 castellatedMeshControls
 {{
@@ -403,7 +468,7 @@ castellatedMeshControls
         }}
     }}
 
-    refinementRegions {{}}
+    refinementRegions {{ {underbody_region} }}
 
     locationInMesh ({loc[0]} {loc[1]} {loc[2]});
 }}
@@ -461,10 +526,14 @@ startTime       0;
 stopAt          endTime;
 endTime         {cfg.max_iterations};
 deltaT          1;
-writeControl    timeStep;
-writeInterval   {max(cfg.max_iterations // 4, 1)};
-purgeWrite      2;
-writeFormat     ascii;
+// Write the field set ONCE, at the end. The old `timeStep` / every-500
+// setting dumped U/p/phi/k/omega/nut for a ~1M-cell case four times per
+// solve in ASCII at 8 digits — multi-GB per iteration, for data nothing
+// reads. The forces/yPlus function objects below still write every step;
+// they are what invoke() actually parses.
+writeControl    onEnd;
+purgeWrite      0;
+writeFormat     binary;
 writePrecision  8;
 writeCompression off;
 timeFormat      general;
@@ -709,7 +778,9 @@ def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
 
     _write(run / "system" / "blockMeshDict", build_blockmesh_dict(box_min, box_max, cell_size))
     _write(run / "system" / "snappyHexMeshDict",
-           build_snappy_dict("car.stl", loc, refinement, add_layers))
+           build_snappy_dict("car.stl", loc, refinement, add_layers,
+                             underbody=underbody_box(bounds),
+                             underbody_extra_levels=cfg.underbody_refinement_level))
     _write(run / "system" / "controlDict", build_control_dict(cfg, frontal_area_half))
     _write(run / "system" / "fvSchemes", _FV_SCHEMES)
     _write(run / "system" / "fvSolution", _FV_SOLUTION)
@@ -743,10 +814,16 @@ boundaryField
     symmetry    {{ type symmetryPlane; }}
     outer       {{ type slip; }}
     upperWall   {{ type slip; }}
-    lowerWall   {{ type noSlip; }}
+    lowerWall   {{ type fixedValue; value uniform ({u} 0 0); }}
     car         {{ type noSlip; }}
 }}
 """)
+    # lowerWall is a ROLLING ROAD, not a stationary wall. In the car's frame the
+    # track moves backwards under it at the reference speed, so the ground must
+    # carry U, not zero. A no-slip stationary floor would grow a ~0.7 m boundary
+    # layer over the 3L upstream run and arrive at the car with the wrong
+    # velocity profile — a large error precisely in the ride-height gap that
+    # domain_box's track-level lowerWall now exists to capture.
     _write(zero_dir / "p", _header("volScalarField", "p") + """
 dimensions      [0 2 -2 0 0 0 0];
 internalField   uniform 0;
@@ -835,12 +912,14 @@ def _run(cmd: str, cwd: Path, bashrc: str, log_name: str, timeout: int) -> str:
     return proc.stdout
 
 
-def run_stages(run_dir: str, cfg: OpenFOAMRunConfig, bashrc: str, timeout_s: int = 7200) -> dict:
+def run_stages(run_dir: str, cfg: OpenFOAMRunConfig, bashrc: str,
+               timeout_s: Optional[int] = None) -> dict:
     """Execute mesh + solve stages in order and return parsed logs.
 
     Stages (SPEC "Solver path"): surfaceFeatureExtract → blockMesh →
     snappyHexMesh → checkMesh → simpleFoam. Serial unless cfg.n_subdomains > 1.
     """
+    timeout_s = cfg.stage_timeout_s if timeout_s is None else timeout_s
     run = Path(run_dir)
     solver = "simpleFoam"
     _run("surfaceFeatureExtract", run, bashrc, "surfaceFeatureExtract.log", timeout_s)
@@ -936,8 +1015,12 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
             "This build targets openfoam.com (ESI) so the adjoint solver is "
             "available; the Foundation (.org) build will not provide it."
         )
-    run_dir = str(Path(case_dir) / "runs" / f"run_{os.getpid()}_{abs(hash(stl_path)) % 10_000}")
+    # uuid4, not `hash(stl_path) % 10_000`: Part 3 runs candidates as THREADS in
+    # one process, so pid is shared and a 1-in-10k hash collision meant
+    # build_case's opening `shutil.rmtree(run)` deleted a sibling's live case.
+    run_dir = str(Path(case_dir) / "runs" / f"run_{os.getpid()}_{uuid.uuid4().hex[:12]}")
     meta = build_case(run_dir, stl_path, cfg)
+    succeeded = False
     try:
         logs = run_stages(run_dir, cfg, resolved_bashrc)
         neg = parse_negative_volume_cells(logs["checkmesh_log"])
@@ -948,7 +1031,7 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
             yp_min, yp_max = parse_yplus_range(_read_yplus(run_dir, logs["solver_log"]))
         except ValueError:
             yp_min, yp_max = float("nan"), float("nan")
-        return {
+        result = {
             "D20_half": abs(fx),
             "L_half": fz,
             "A_half": meta["frontal_area_half"],
@@ -959,9 +1042,17 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
             "y_plus_max": yp_max,
             "courant_max": courant,
         }
+        succeeded = True
+        return result
     finally:
-        if not cfg.keep_run_dir:
+        # Keep the run directory on FAILURE, always. The old unconditional
+        # rmtree deleted logs/ on the error path too — while CFDRunError's own
+        # message told the reader to "See logs/ in the run directory". The first
+        # real failure on the VM was therefore undiagnosable by construction.
+        if succeeded and not cfg.keep_run_dir:
             shutil.rmtree(run_dir, ignore_errors=True)
+        elif not succeeded:
+            print(f"[openfoam_case] stage failed — run dir KEPT for diagnosis: {run_dir}")
 
 
 # ---------------------------------------------------------------------------

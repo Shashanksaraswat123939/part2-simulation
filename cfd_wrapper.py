@@ -66,7 +66,16 @@ def _invoke_openfoam_pipeline(stl_path, case_dir, run_config=None) -> dict:
     except subprocess.CalledProcessError as exc:
         raise CFDRunError(
             f"OpenFOAM stage failed (exit {exc.returncode}): {getattr(exc, 'cmd', '?')}. "
-            "See logs/ in the run directory."
+            "See logs/ in the run directory (kept on failure)."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        # Was uncaught: it reached Part 3's broad `except` as a raw
+        # TimeoutExpired and became an opaque "CFD failed". Name it, so a
+        # 2-hour wall-clock kill is distinguishable from a solver crash.
+        raise CFDRunError(
+            f"OpenFOAM stage timed out after {exc.timeout}s: {getattr(exc, 'cmd', '?')}. "
+            "Raise OpenFOAMRunConfig.stage_timeout_s, lower max_iterations, or "
+            "coarsen `resolution`."
         ) from exc
 
 
@@ -118,8 +127,12 @@ def run_half_car_cfd(
     reference_speed_mps: float = REFERENCE_SPEED_MPS,
     air_density_kgm3: float = AIR_DENSITY_KGM3,
     max_iterations: int = 2000,
-    turbulence_model: str = "laminar",
+    turbulence_model: str = "kOmegaSST",
     resolution: str = "medium",
+    n_subdomains: int = 1,
+    keep_run_dir: bool = False,
+    stage_timeout_s: int = 7200,
+    underbody_refinement_level: int = 1,
 ) -> tuple[HalfCarQuantities, CFDHealthReport]:
     """
     Validate a half-car STL and package OpenFOAM half-domain outputs.
@@ -161,6 +174,14 @@ def run_half_car_cfd(
         max_iterations=max_iterations,
         turbulence_model=turbulence_model,
         resolution=resolution,
+        # These four were unreachable from the pipeline before: run_cfd called
+        # with all defaults, so n_subdomains was permanently 1 and every solve
+        # ran single-core on a 360 GB machine, run dirs were always deleted,
+        # and the timeout was hardcoded at 2 h.
+        n_subdomains=n_subdomains,
+        keep_run_dir=keep_run_dir,
+        stage_timeout_s=stage_timeout_s,
+        underbody_refinement_level=underbody_refinement_level,
         moment_reference_point_m=MOMENT_REFERENCE_POINT_M,
     )
 
@@ -197,6 +218,9 @@ def run_half_car_adjoint(
     resolution: str = "medium",
     primal_iters: int = 1000,
     adjoint_iters: int = 1000,
+    keep_run_dir: bool = False,
+    stage_timeout_s: int = 14400,
+    underbody_refinement_level: int = 1,
 ) -> np.ndarray:
     """Drag-adjoint surface sensitivity for a half-car STL. This is what
     Part 3's `pipeline_interface.real_bindings.run_adjoint` needs and what
@@ -246,6 +270,9 @@ def run_half_car_adjoint(
         resolution=resolution,
         primal_iters=primal_iters,
         adjoint_iters=adjoint_iters,
+        keep_run_dir=keep_run_dir,
+        stage_timeout_s=stage_timeout_s,
+        underbody_refinement_level=underbody_refinement_level,
     )
     case_dir = Path(__file__).resolve().parent / "cfd_case_template"
 
@@ -256,7 +283,13 @@ def run_half_car_adjoint(
     except subprocess.CalledProcessError as exc:
         raise CFDRunError(
             f"OpenFOAM adjoint stage failed (exit {exc.returncode}): "
-            f"{getattr(exc, 'cmd', '?')}. See logs/ in the run directory."
+            f"{getattr(exc, 'cmd', '?')}. See logs/ in the run directory (kept on failure)."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise CFDRunError(
+            f"OpenFOAM adjoint stage timed out after {exc.timeout}s: "
+            f"{getattr(exc, 'cmd', '?')}. Raise AdjointRunConfig.stage_timeout_s "
+            "or lower primal_iters/adjoint_iters."
         ) from exc
     except (FileNotFoundError, ValueError) as exc:
         raise CFDRunError(f"Adjoint sensitivity extraction failed: {exc}") from exc

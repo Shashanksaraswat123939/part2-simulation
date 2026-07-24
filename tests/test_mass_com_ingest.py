@@ -128,7 +128,12 @@ def test_com_sanity_bounds_exactly_at_limit_accepted():
     )
     # Should not raise — exactly at boundary is within bounds
     result = ingest_mass_com(machined, fixed)
-    assert result.com_x_m == 10.0
+    # Tolerance, not `== 10.0`: com_x is a mass-weighted sum of four components
+    # all at 10.0 m, which lands on 10.000000000000002. Asserting exact float
+    # equality on that made this test fail on representation error alone while
+    # testing nothing about the boundary behaviour it is named for. The guard
+    # itself now carries COM_SANITY_TOL_M for the same reason.
+    assert abs(result.com_x_m - 10.0) < 1e-9, result.com_x_m
 
 
 if __name__ == "__main__":

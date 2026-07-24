@@ -10,6 +10,12 @@ from physics_contract import ComponentMassCOM, FullCarMassCOM
 # Broad sanity bounds for COM coordinates (m). A STEM Racing car is ~150mm long;
 # COM at 10m is clearly a units or origin bug, not a legitimate design.
 COM_SANITY_BOUNDS_M = (-10.0, 10.0)
+# The bounds are a units/origin smoke alarm three orders of magnitude away from
+# any real value, so comparing to them with exact float `<=` is pointless
+# precision: a mass-weighted sum landing on 10.000000000000002 is "10", not a
+# units bug. Without this, the boundary case fails on representation error
+# alone (test_com_sanity_bounds_exactly_at_limit_accepted).
+COM_SANITY_TOL_M = 1e-9
 
 CO2_CARTRIDGE_MASS_KG = 0.023          # 23 g, fixed
 
@@ -113,7 +119,9 @@ def ingest_mass_com(
     # Sanity check: COM coordinates should be within a physically reasonable range.
     # A COM at 10m for a ~150mm car indicates a units bug (mm vs m) or origin error.
     for name, value in (("com_x_m", com_x), ("com_y_m", com_y), ("com_z_m", com_z)):
-        if not (COM_SANITY_BOUNDS_M[0] <= value <= COM_SANITY_BOUNDS_M[1]):
+        if not (COM_SANITY_BOUNDS_M[0] - COM_SANITY_TOL_M
+                <= value <=
+                COM_SANITY_BOUNDS_M[1] + COM_SANITY_TOL_M):
             raise ValueError(
                 f"{name}={value} is outside sanity bounds {COM_SANITY_BOUNDS_M}; "
                 f"check for a units (mm vs m) or coordinate-origin bug upstream"

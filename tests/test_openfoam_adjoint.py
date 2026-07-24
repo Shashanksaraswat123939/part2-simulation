@@ -76,10 +76,17 @@ def test_optimisation_dict_has_single_sensitivity_type_and_consistent_solve():
     cfg = AdjointRunConfig(primal_iters=50, adjoint_iters=60)
     d = oa.build_optimisation_dict(cfg, ref_area_half=0.004)
     assert "optimisationManager singleRun;" in d
-    assert "sensitivityType    surfacePoints;" in d
-    assert d.count("sensitivityType") == 1  # no duplicate-key bug (regression: an
-    # earlier draft had both "sensitivityType single;" and
-    # "sensitivityType surfacePoints;" in the same dict block)
+    # v2412 schema (corrected 2026-07-24). Was: designVariables { sensitivityType
+    # surfacePoints; } -- designVariables requires a `type` entry it did not
+    # have, and `surfacePoints` is the pre-v2112 type name. Sensitivity-map mode
+    # uses the `sensitivities` block; the type name is pinned by SENSITIVITY_TYPE,
+    # which must agree with the filename find_sensitivity_file globs for.
+    assert "sensitivities" in d
+    assert "designVariables" not in d
+    assert f"type               {oa.SENSITIVITY_TYPE};" in d
+    assert d.count("sensitivityType") == 0
+    # Without this the solver runs to completion and writes NO sensitivity field.
+    assert "computeSensitivities   true;" in d
     assert "patches    (car);" in d
     assert "direction  (1 0 0);" in d  # drag = +x
     assert "weight     1.;" in d  # unweighted -- scaling applied in Python

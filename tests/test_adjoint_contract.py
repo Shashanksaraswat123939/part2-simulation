@@ -116,14 +116,37 @@ def test_perturb_and_confirm_improvement():
 
 
 def test_adjoint_objective_is_w_D20_times_D20():
-    """Per Part 2 spec: Objective = w_D20 × D20, scaled by ADJOINT_HALF_CAR_SCALING (0.5)."""
+    """Per Part 2 spec: Objective = w_D20 × D20, scaled by ADJOINT_HALF_CAR_SCALING.
+
+    Reads the constant instead of hardcoding it: this test used to assert a
+    literal 0.5 and so ENFORCED the wrong scaling (audit B.2 / B.4 pattern —
+    "a test currently enforces the false behaviour"). The value itself is
+    pinned by test_half_car_scaling_is_the_chain_rule_factor below.
+    """
+    from adjoint_contract import ADJOINT_HALF_CAR_SCALING
     model = _model()
     params = _params(D20=12.0, mu=0.02)
     w_D20 = compute_adjoint_objective_weight(params, model)
     objective = compute_adjoint_objective(params, model)
-    expected = w_D20 * 12.0 * 0.5  # ADJOINT_HALF_CAR_SCALING = 0.5
+    expected = w_D20 * 12.0 * ADJOINT_HALF_CAR_SCALING
     assert abs(objective - expected) < 1e-12, (
-        f"Objective {objective} != w_D20×D20×0.5 {expected}"
+        f"Objective {objective} != w_D20*D20*{ADJOINT_HALF_CAR_SCALING} {expected}"
+    )
+
+
+def test_half_car_scaling_is_the_chain_rule_factor():
+    """D20_full = 2*D20_half, so dT/dSurface = w_D20 * 2 * (dD20_half/dSurface).
+
+    Derived here from to_full_car rather than asserted as a magic number, so
+    the two can never drift apart again.
+    """
+    from adjoint_contract import ADJOINT_HALF_CAR_SCALING
+    from physics_contract import HalfCarQuantities
+    half = HalfCarQuantities(D20=1.0, L=0.0, A=0.001, pitching_moment_half=0.0)
+    doubling = half.to_full_car().D20 / half.D20
+    assert abs(ADJOINT_HALF_CAR_SCALING - doubling) < 1e-12, (
+        f"ADJOINT_HALF_CAR_SCALING={ADJOINT_HALF_CAR_SCALING} must equal the "
+        f"to_full_car doubling factor {doubling}, not its reciprocal"
     )
 
 

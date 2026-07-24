@@ -6,13 +6,31 @@ from typing import Optional
 
 from race_objective_adapter import race_value_and_grad_guarded
 
-# Half-car scaling factor for the adjoint objective.
-# The forward CFD runs on a half-car mesh (symmetry plane), and D20 in the
-# param_vector is the full-car value (post to_full_car() doubling). The
-# adjoint objective differentiates w_D20 × D20 w.r.t. the half-car surface,
-# so we scale D20 by 0.5 to get the half-car contribution, preventing a 2x
-# error in surface sensitivities once real OpenFOAM adjoint is wired in.
-ADJOINT_HALF_CAR_SCALING = 0.5
+# Half-car scaling factor for the adjoint objective. CORRECTED 2026-07-24
+# (was 0.5; audit finding B.2 in PART2_AUDIT_CATEGORIZED.md, open since the
+# first audit). The chain rule, written out:
+#
+#   T depends on D20_full;  D20_full = 2 * D20_half   (HalfCarQuantities.to_full_car)
+#   OpenFOAM returns raw = dD20_half / dSurface       (the solve is half-car)
+#
+#   dT/dSurface = (dT/dD20_full) * (dD20_full/dD20_half) * (dD20_half/dSurface)
+#               =      w_D20     *          2           *        raw
+#
+# and the phi update mirrors every right-half point onto the left
+# (apply_adjoint_to_unified), so both halves move together — which is exactly
+# the factor of 2 above, not a second one.
+#
+# The old 0.5 came from "D20 in the param vector is full-car, so halve it",
+# which confuses halving the VALUE with the derivative w.r.t. a half-car
+# surface. Net effect of the old constant: 4x understatement.
+#
+# ⚠ Magnitude is currently INERT: phi_updater.apply_adjoint_to_unified feeds the
+# aero field through combine_gradients, which normalises it to unit RMS — so
+# every constant factor here cancels and only the SIGN survives. This fix
+# matters for correctness and for the day normalisation changes; it will not
+# move the first solve. The thing that WILL move it is the sign — verify on
+# iteration 1 that D20 goes down, not up.
+ADJOINT_HALF_CAR_SCALING = 2.0
 
 
 def compute_adjoint_objective_weight(
