@@ -65,9 +65,18 @@ class FixedHardwareSpec:
             raise ValueError("co2_cartridge_mass_kg must equal 0.023 kg")
 
 
+# Mass of a full CO2 charge, kg. Reported alongside (never inside) the totals,
+# so launch-condition COM can be computed without re-introducing the
+# double-count. The authoritative value at run time is the thrust CSV's own
+# `sheet_mass(0) - mass_sheet_final` (7.87 g for co2_thrust_data.csv); this is
+# the nominal 8 g charge used when no model is on hand.
+CO2_PROPELLANT_MASS_KG = 0.008
+
+
 def ingest_mass_com(
     machined_components: list[ComponentMassCOM],
     fixed_hardware: FixedHardwareSpec,
+    propellant_mass_kg: float = CO2_PROPELLANT_MASS_KG,
 ) -> FullCarMassCOM:
     """
     Combine Part 1's machined-component mass/COM report with fixed hardware.
@@ -143,4 +152,8 @@ def ingest_mass_com(
         com_y_m=com_y,
         com_z_m=com_z,
         components=components,
+        # Propellant rides at the cartridge's own COM and is NOT in the totals
+        # above -- see FullCarMassCOM. Zero unless the caller supplies a charge.
+        propellant_mass_kg=propellant_mass_kg,
+        propellant_com=tuple(fixed_hardware.co2_cartridge_com),
     )

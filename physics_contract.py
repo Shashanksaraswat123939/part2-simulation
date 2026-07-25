@@ -203,3 +203,37 @@ class FullCarMassCOM:
     com_y_m: float
     com_z_m: float
     components: tuple = field(default_factory=tuple)
+    # CO2 PROPELLANT, carried separately and deliberately EXCLUDED from
+    # total_mass_kg / com_*_m above. Those describe the car as it crosses the
+    # line: everything permanently aboard. The propellant is aboard only at the
+    # start (~7.9 g) and is gone by t ~ 0.2 s, and race_objective owns its mass
+    # via `sheet_mass(t) - mass_sheet_final`. Including it here would recreate
+    # the double-count corrected on 2026-07-24.
+    #
+    # It is reported because it MOVES THE COM WHILE IT IS THERE: at the design
+    # default it sits at x=208 mm / z=35 mm, well aft and above the dry COM, so
+    # at launch it pulls com_x +13.5 mm and com_z +0.75 mm. That is worth <=0.11 ms
+    # of race time (negligible), but it lands squarely on the static-stability
+    # check at peak thrust -- the worst instant for a wheelie. Consumers wanting
+    # launch-condition COM should blend it in via com_with_propellant().
+    propellant_mass_kg: float = 0.0
+    propellant_com: tuple = (0.0, 0.0, 0.0)
+
+    def com_with_propellant(self) -> tuple:
+        """(total_mass_kg, com_x_m, com_y_m, com_z_m) at the START LINE.
+
+        The mass-weighted blend of the dry car and a full propellant charge.
+        Use for launch-instant analysis (static stability, wheelie margin);
+        use the plain fields for anything describing the car after ~0.2 s.
+        """
+        m = self.total_mass_kg + self.propellant_mass_kg
+        if m <= 0:
+            return (0.0, self.com_x_m, self.com_y_m, self.com_z_m)
+        px, py, pz = self.propellant_com
+        w, p = self.total_mass_kg, self.propellant_mass_kg
+        return (
+            m,
+            (w * self.com_x_m + p * px) / m,
+            (w * self.com_y_m + p * py) / m,
+            (w * self.com_z_m + p * pz) / m,
+        )
