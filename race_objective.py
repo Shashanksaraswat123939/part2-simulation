@@ -42,8 +42,12 @@ Outputs:
 
 Notes
 -----
-- This keeps your old mass logic:
-      m_car(t) = car_weight_kg + 0.021 + m_sheet(t) - 0.048
+- Mass logic (CORRECTED 2026-07-24, see car_mass_from_time for the full
+  rationale). car_weight_kg carries everything permanently on the car,
+  INCLUDING the empty cartridge shell; this file adds only the unspent CO2:
+      m_car(t) = car_weight_kg + (m_sheet(t) - m_sheet_final)
+  The previous form added a second cartridge shell (`+ 0.021`) on top of the
+  one already in car_weight_kg, inflating a 50 g car to 78.9 g.
 - Wheel inertia is converted into effective mass:
       m_eff = m_car + N*I/r^2
 - The CSV is not used as a lookup table inside the objective. A smooth RBF
@@ -247,9 +251,39 @@ def car_mass_from_time(
     car_weight_kg: jnp.ndarray,
     model: SmoothSheetModel,
 ) -> jnp.ndarray:
-    # Preserves old logic:
-    # m_car = 0.021 + m_sheet - 0.048 + entered_car_weight
-    m = car_weight_kg + 0.021 + sheet_mass(t, model) - 0.048
+    """Instantaneous vehicle mass: the entered car weight plus the propellant
+    still on board.
+
+    UNLOCKED AND CORRECTED 2026-07-24 (project owner authorised). Was:
+
+        m = car_weight_kg + 0.021 + sheet_mass(t) - 0.048
+
+    which added +28.9 g at the line decaying to +21.0 g on top of
+    car_weight_kg. The 0.021 term is a CARTRIDGE SHELL mass, and
+    car_weight_kg already contains one: Part 2's mass_com_ingest sums
+    CO2_CARTRIDGE_MASS_KG (23 g) into the total it passes in. So the cartridge
+    hardware was counted TWICE -- a 50 g car entered the integrator at 78.9 g,
+    roughly +23 g of phantom mass on a vehicle whose regulated minimum is 48 g.
+    At dT/dmass ~ 17.9 s/kg that is ~0.41 s of fictitious race time, larger
+    than anything the shape optimiser can win back.
+
+    The split of responsibility is now unambiguous:
+
+      car_weight_kg   everything PERMANENTLY on the car, from the geometry
+                      mass rollup -- machined body, wheels/axles, rear wing,
+                      and the EMPTY cartridge shell (CO2_CARTRIDGE_MASS_KG).
+      this function   adds only the CO2 PROPELLANT still unspent at time t,
+                      which no geometry model can represent because it leaves
+                      the vehicle during the run.
+
+    The propellant term is `sheet_mass(t) - mass_sheet_final`, i.e. the CSV's
+    own mass curve measured from its own endpoint: 7.89 g at t=0 falling to 0.
+    It reads mass_sheet_final off the model instead of the hardcoded 0.048 so
+    it stays exactly zero at the end for ANY thrust CSV, rather than depending
+    on that constant matching the data.
+    """
+    propellant_kg = sheet_mass(t, model) - model.mass_sheet_final
+    m = car_weight_kg + propellant_kg
     return _smooth_positive(m, scale=1e-5)
 
 

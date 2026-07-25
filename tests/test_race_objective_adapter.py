@@ -12,7 +12,7 @@ from race_objective import BuildSettings, build_smooth_sheet_model, race_value_a
 from race_objective_adapter import adapt_gradients, race_value_and_grad_guarded
 
 
-EXPECTED_HASH = "6ed47bb624245e85d67a3fb6dd196b4b69fe2debc39725fac8c9614aec404358"
+EXPECTED_HASH = "9d8c49c488b5c2f960daca9ab575f03ccb1eba99534a24303233f7ccc61d2c84"
 
 
 def _synthetic_csv():
@@ -51,6 +51,59 @@ def test_hash_of_locked_file_matches():
     # Unix checkouts. The locked content is the LF-normalized Python source.
     digest = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     assert digest == EXPECTED_HASH
+
+
+def test_cartridge_mass_is_not_double_counted():
+    """car_weight_kg owns the cartridge HARDWARE; the objective owns only the
+    unspent propellant.
+
+    Regression guard for the 2026-07-24 correction. The old formula was
+    `car_weight_kg + 0.021 + sheet(t) - 0.048`, which added a SECOND cartridge
+    shell on top of the CO2_CARTRIDGE_MASS_KG already summed into
+    car_weight_kg by mass_com_ingest -- a 50 g car entered the integrator at
+    78.9 g. Two properties pin it:
+
+      1. at the finish the vehicle must weigh EXACTLY car_weight_kg (all
+         propellant spent, nothing else added);
+      2. at the line the excess must equal the CSV's own propellant mass,
+         not a cartridge-shell-sized lump.
+    """
+    import jax.numpy as jnp
+    from race_objective import build_smooth_sheet_model, car_mass_from_time, sheet_mass
+
+    path = _synthetic_csv()
+    try:
+        model = build_smooth_sheet_model(path, BuildSettings(
+            n_basis=5, ridge=1e-8, tail_tau=0.025, x_start=1e-4,
+            x_grid_power=2.0, n_steps=60))
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+    cw = 0.050
+    end = float(car_mass_from_time(jnp.asarray(1e3), jnp.asarray(cw), model))
+    assert abs(end - cw) < 1e-6, (
+        f"at the finish the car must weigh exactly car_weight_kg ({cw} kg), got "
+        f"{end} kg -- something other than propellant is being added"
+    )
+    start = float(car_mass_from_time(jnp.asarray(0.0), jnp.asarray(cw), model))
+    expected = cw + float(sheet_mass(jnp.asarray(0.0), model) - model.mass_sheet_final)
+    assert abs(start - expected) < 1e-9, (
+        f"start mass {start} != car_weight_kg + propellant {expected}"
+    )
+    # Same two properties against the REAL project thrust curve, where the
+    # numbers are meaningful: its mass column runs 0.05589 -> 0.04802, so the
+    # excess at the line must be ~7.9 g of CO2. The old formula gave 28.9 g.
+    real_csv = Path(__file__).resolve().parents[1] / "co2_thrust_data.csv"
+    if real_csv.exists():
+        real = build_smooth_sheet_model(str(real_csv))
+        r_start = float(car_mass_from_time(jnp.asarray(0.0), jnp.asarray(cw), real))
+        r_end = float(car_mass_from_time(jnp.asarray(1e3), jnp.asarray(cw), real))
+        assert abs(r_end - cw) < 1e-6, f"real CSV: finish mass {r_end} != {cw}"
+        excess_g = (r_start - cw) * 1000.0
+        assert 5.0 < excess_g < 12.0, (
+            f"real CSV: excess at the line is {excess_g:.2f} g, expected ~7.9 g of "
+            "CO2. Near 29 g means the cartridge shell is being double-counted again."
+        )
 
 
 def test_adapt_gradients_key_mapping():

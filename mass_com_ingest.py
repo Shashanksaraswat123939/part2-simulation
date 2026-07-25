@@ -17,7 +17,17 @@ COM_SANITY_BOUNDS_M = (-10.0, 10.0)
 # alone (test_com_sanity_bounds_exactly_at_limit_accepted).
 COM_SANITY_TOL_M = 1e-9
 
-CO2_CARTRIDGE_MASS_KG = 0.023          # 23 g, fixed
+# 23 g, fixed. This is the EMPTY (spent) cartridge -- the hardware that stays
+# with the car for the whole run. The CO2 PROPELLANT is NOT included here and
+# must not be: it leaves the vehicle during the run, so it is supplied by
+# race_objective.car_mass_from_time as `sheet_mass(t) - mass_sheet_final`
+# (7.89 g at the line, 0 g at the finish).
+#
+# The boundary was previously undefined, and both sides assumed they owned the
+# cartridge: this constant went into car_weight_kg AND the objective added its
+# own 21 g shell on top. Corrected 2026-07-24 -- geometry owns what stays,
+# the objective owns what burns off.
+CO2_CARTRIDGE_MASS_KG = 0.023
 
 
 @dataclass(frozen=True)
