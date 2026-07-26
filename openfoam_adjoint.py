@@ -153,7 +153,9 @@ def build_adjoint_control_dict(cfg: AdjointRunConfig) -> str:
     end_time = cfg.primal_iters + cfg.adjoint_iters
     # writeFormat MUST stay ascii here (unlike the forward case, which is now
     # binary): _parse_foam_scalar_list reads the pointSensNormal* field as text.
-    # writeControl onEnd, because only the final sensitivity field is read.
+    # writeInterval == endTime writes once, at the end -- only the final
+    # sensitivity field is read. NOT `writeControl onEnd`: that value belongs to
+    # the function-object enum, not Time::writeControls, and v2412 aborts on it.
     return oc._header("dictionary", "controlDict") + f"""
 application     adjointOptimisationFoam;
 startFrom       startTime;
@@ -161,7 +163,8 @@ startTime       0;
 stopAt          endTime;
 endTime         {end_time};
 deltaT          1;
-writeControl    onEnd;
+writeControl    timeStep;
+writeInterval   {end_time};
 purgeWrite      0;
 writeFormat     ascii;
 writePrecision  8;
@@ -172,17 +175,21 @@ runTimeModifiable true;
 """
 
 
-# Sensitivity type name written into optimisationDict, and the suffix the
-# solver appends to the output field name. In ESI v2112+ the old
-# `sensitivitySurfacePoints` family was replaced by ESI/FI/SI, and the written
-# pointScalarField is "pointSensNormal" + <adjointSolverName> + <type()>.
+# Sensitivity type written into optimisationDict.
 #
-# This is pinned to the observed output filename `pointSensNormaladjS1ESI`
-# (adjoint solver `adjS1`, type `ESI`) rather than to documentation — that
-# filename is the one piece of ground truth we have from a real run, and it is
-# ALSO what caught the previous bug: the dict asked for `surfacePoints` while
-# the reader expected an `...ESI` file, so the two could never have agreed.
-SENSITIVITY_TYPE = "ESI"
+# VERIFIED against the shipped v2412 tutorials on a real install (2026-07-26),
+# not inferred. `grep sensitivityType` across
+# tutorials/incompressible/adjointOptimisationFoam gives:
+#     topO 31, shapeFI 20, surfacePoints 9, shapeESI 10, surface 4, multiple 6
+# and sensitivityMaps/motorBike -- the external-aero case closest to ours --
+# uses `sensitivityType surfacePoints` for its per-POINT map, which is the one
+# Part 1's per-vertex contract needs.
+#
+# An intermediate version of this file guessed `ESI` from an observed output
+# filename and moved the block from `designVariables` to `sensitivities`. Both
+# were wrong: v2412 has no `sensitivities` block, and `shapeESI` is a different
+# (surface-integral) formulation. The preflight caught it before any solve ran.
+SENSITIVITY_TYPE = "surfacePoints"
 
 
 def build_optimisation_dict(cfg: AdjointRunConfig, ref_area_half: float) -> str:
@@ -272,9 +279,19 @@ adjointManagers
                     }}
                 }}
 
+                // Matches sensitivityMaps/motorBike (v2412) rather than the
+                // bare `ATCModel standard;` this used to carry. motorBike is
+                // the shipped EXTERNAL-AERO case, so its ATC treatment is the
+                // right reference: zeroing the adjoint transpose convection on
+                // wall/patch boundaries is what keeps the adjoint stable
+                // around a bluff body.
                 ATCModel
                 {{
                     ATCModel          standard;
+                    extraConvection   0;
+                    nSmooth           0;
+                    zeroATCPatchTypes (wall patch);
+                    maskType          pointCells;
                 }}
 
                 solutionControls
@@ -296,18 +313,19 @@ adjointManagers
 
 optimisation
 {{
-    sensitivities
+    designVariables
     {{
-        // Sensitivity-map mode: we only want dJ/dSurface. We are NOT letting
-        // OpenFOAM parameterise and move the shape — Part 1's level set does
-        // that — so the shape-design-variable block (which would additionally
-        // need type/shapeType entries for a parameterisation we do not use)
-        // is deliberately absent. A test asserts it stays absent.
+        // Layout copied from the shipped v2412 sensitivityMaps/motorBike
+        // tutorial (its `pointBased` sub-dict), reduced to the single
+        // sensitivity type we need. That tutorial requests several types at
+        // once via `sensitivityType multiple; sensitivityTypes (...)`; asking
+        // for exactly one is the same schema without the list.
         //
-        // `ESI` writes one scalar per MESH POINT as
-        // pointSensNormal<adjointSolverName>ESI — exactly Part 1's
-        // per-vertex contract after map_sensitivity_to_stl_vertices().
-        type               {SENSITIVITY_TYPE};
+        // `surfacePoints` gives one scalar per MESH POINT, which is what Part
+        // 1's per-vertex contract needs after map_sensitivity_to_stl_vertices.
+        // The face-based alternatives (`surface`, `shapeESI`, `shapeFI`) are
+        // per-face and would not line up.
+        sensitivityType    {SENSITIVITY_TYPE};
         patches            (car);
         adjointEikonalSolver
         {{

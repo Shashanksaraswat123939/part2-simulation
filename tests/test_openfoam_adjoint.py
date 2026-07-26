@@ -76,15 +76,16 @@ def test_optimisation_dict_has_single_sensitivity_type_and_consistent_solve():
     cfg = AdjointRunConfig(primal_iters=50, adjoint_iters=60)
     d = oa.build_optimisation_dict(cfg, ref_area_half=0.004)
     assert "optimisationManager singleRun;" in d
-    # v2412 schema (corrected 2026-07-24). Was: designVariables { sensitivityType
-    # surfacePoints; } -- designVariables requires a `type` entry it did not
-    # have, and `surfacePoints` is the pre-v2112 type name. Sensitivity-map mode
-    # uses the `sensitivities` block; the type name is pinned by SENSITIVITY_TYPE,
-    # which must agree with the filename find_sensitivity_file globs for.
-    assert "sensitivities" in d
-    assert "designVariables" not in d
-    assert f"type               {oa.SENSITIVITY_TYPE};" in d
-    assert d.count("sensitivityType") == 0
+    # v2412 schema, VERIFIED against the shipped tutorials on a real install
+    # (2026-07-26). sensitivityMaps/motorBike -- the external-aero case closest
+    # to ours -- uses:
+    #     optimisation { designVariables { sensitivityType surfacePoints; ... } }
+    # There is no `sensitivities` block in v2412 at all. An intermediate version
+    # of this test asserted exactly that wrong shape; the preflight caught it.
+    assert "designVariables" in d
+    assert "sensitivities\n" not in d
+    assert f"sensitivityType    {oa.SENSITIVITY_TYPE};" in d
+    assert oa.SENSITIVITY_TYPE == "surfacePoints"
     # Without this the solver runs to completion and writes NO sensitivity field.
     assert "computeSensitivities   true;" in d
     assert "patches    (car);" in d

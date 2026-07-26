@@ -127,6 +127,37 @@ def test_snappy_layers_toggle():
     assert "addLayers       false" in without
 
 
+def test_write_control_is_a_valid_time_enum():
+    """controlDict's writeControl must be a Time::writeControls value.
+
+    Regression guard: `writeControl onEnd;` shipped in BOTH controlDicts.
+    `onEnd` is valid for a FUNCTION OBJECT's writeControl but not the global
+    one, and v2412 aborts with a Foam::Enum readEntry error before meshing
+    starts. Found on the first real solve, 2026-07-26.
+    """
+    import re
+    import openfoam_adjoint as oa
+    VALID = {"timeStep", "runTime", "adjustableRunTime", "cpuTime", "clockTime"}
+
+    fwd = oc.build_control_dict(OpenFOAMRunConfig(max_iterations=250), 0.004)
+    adj = oa.build_adjoint_control_dict(
+        oa.AdjointRunConfig(primal_iters=40, adjoint_iters=60))
+
+    for label, text in (("forward", fwd), ("adjoint", adj)):
+        # The FIRST writeControl is the global (Time) one; later ones belong to
+        # function objects, which legitimately accept writeTime.
+        first = re.search(r"^writeControl\s+(\w+);", text, re.M)
+        assert first, f"{label}: no global writeControl"
+        assert first.group(1) in VALID, (
+            f"{label} writeControl={first.group(1)!r} not in {sorted(VALID)}")
+        interval = re.search(r"^writeInterval\s+(\d+);", text, re.M)
+        end = re.search(r"^endTime\s+(\d+);", text, re.M)
+        assert interval and end, f"{label}: missing writeInterval/endTime"
+        assert int(interval.group(1)) == int(end.group(1)), (
+            f"{label}: writeInterval {interval.group(1)} != endTime "
+            f"{end.group(1)}; fields would be written more than once")
+
+
 def test_control_dict_has_force_objects_and_cofr():
     cfg = OpenFOAMRunConfig(moment_reference_point_m=(0.1, 0.0, 0.02), max_iterations=1500)
     d = oc.build_control_dict(cfg, ref_area_half=0.01)

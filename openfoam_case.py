@@ -526,12 +526,18 @@ startTime       0;
 stopAt          endTime;
 endTime         {cfg.max_iterations};
 deltaT          1;
-// Write the field set ONCE, at the end. The old `timeStep` / every-500
-// setting dumped U/p/phi/k/omega/nut for a ~1M-cell case four times per
-// solve in ASCII at 8 digits — multi-GB per iteration, for data nothing
-// reads. The forces/yPlus function objects below still write every step;
-// they are what invoke() actually parses.
-writeControl    onEnd;
+// Write the field set ONCE, at the end: writeInterval == endTime means the
+// only write is the final step. (`writeControl onEnd` is NOT valid here --
+// onEnd belongs to the FUNCTION OBJECT writeControl enum, not
+// Time::writeControls, which accepts only timeStep/runTime/adjustableRunTime/
+// cpuTime/clockTime. Setting it made v2412 abort with a Foam::Enum readEntry
+// error before meshing even started; caught on the first real solve.)
+// The old every-500 setting dumped U/p/phi/k/omega/nut for a ~1M-cell case
+// four times per solve in ASCII at 8 digits -- multi-GB per iteration, for
+// data nothing reads. The forces/yPlus function objects below still write
+// every step; they are what invoke() actually parses.
+writeControl    timeStep;
+writeInterval   {cfg.max_iterations};
 purgeWrite      0;
 writeFormat     binary;
 writePrecision  8;
