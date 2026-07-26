@@ -931,11 +931,27 @@ def run_stages(run_dir: str, cfg: OpenFOAMRunConfig, bashrc: str,
     _run("surfaceFeatureExtract", run, bashrc, "surfaceFeatureExtract.log", timeout_s)
     _run("blockMesh", run, bashrc, "blockMesh.log", timeout_s)
     if cfg.n_subdomains > 1:
+        # MESH SERIALLY, THEN DECOMPOSE. The obvious ordering -- decomposePar,
+        # then snappyHexMesh -parallel -- is what the tutorials do, but it only
+        # works with a `restore0Dir -processor` step in between, and without it
+        # the solve dies with:
+        #     Cannot find patchField entry for car
+        #     file: processor0/0/p/boundaryField
+        # Reason: decomposePar splits the 0/ fields against the BLOCKMESH, which
+        # has no `car` patch -- snappy is what creates it. The decomposed field
+        # files are written before `car` exists and never gain an entry for it.
+        # Caught on the first real parallel solve, 2026-07-26; checkMesh had
+        # already said "Mesh OK, 103395 cells", so the mesh was never the issue.
+        #
+        # Meshing serially and decomposing the FINISHED mesh sidesteps the whole
+        # class of bug: decomposePar then splits a mesh that already has `car`
+        # and 0/ fields that already match it. Costs a little wall-clock
+        # (measured 13.7 s on 4 ranks, so tens of seconds serially) against a
+        # solve measured in tens of minutes -- a trade worth taking for a stage
+        # that is not the bottleneck.
+        _run("snappyHexMesh -overwrite", run, bashrc, "snappyHexMesh.log", timeout_s)
+        checkmesh = _run("checkMesh", run, bashrc, "checkMesh.log", timeout_s)
         _run("decomposePar -force", run, bashrc, "decomposePar.log", timeout_s)
-        _run(f"mpirun -np {cfg.n_subdomains} snappyHexMesh -overwrite -parallel",
-             run, bashrc, "snappyHexMesh.log", timeout_s)
-        checkmesh = _run(f"mpirun -np {cfg.n_subdomains} checkMesh -parallel",
-                         run, bashrc, "checkMesh.log", timeout_s)
         solver_log = _run(f"mpirun -np {cfg.n_subdomains} {solver} -parallel",
                           run, bashrc, "solver.log", timeout_s)
         _run("reconstructPar -latestTime", run, bashrc, "reconstructPar.log", timeout_s)

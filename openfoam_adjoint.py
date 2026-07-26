@@ -554,11 +554,15 @@ def run_adjoint_stages(run_dir: str, cfg: AdjointRunConfig, bashrc: str,
     oc._run("surfaceFeatureExtract", run, bashrc, "surfaceFeatureExtract.log", timeout_s)
     oc._run("blockMesh", run, bashrc, "blockMesh.log", timeout_s)
     if cfg.n_subdomains > 1:
+        # Same ordering fix as openfoam_case.run_stages: mesh SERIALLY, then
+        # decompose the finished mesh. Decomposing first splits the 0/ fields
+        # against the blockMesh, which has no `car` patch yet, and the solve
+        # then dies with "Cannot find patchField entry for car".
+        # (n_subdomains is currently pinned to 1 for the adjoint anyway -- see
+        # AdjointRunConfig -- so this branch is future-proofing, not live.)
+        oc._run("snappyHexMesh -overwrite", run, bashrc, "snappyHexMesh.log", timeout_s)
+        checkmesh = oc._run("checkMesh", run, bashrc, "checkMesh.log", timeout_s)
         oc._run("decomposePar -force", run, bashrc, "decomposePar.log", timeout_s)
-        oc._run(f"mpirun -np {cfg.n_subdomains} snappyHexMesh -overwrite -parallel",
-                run, bashrc, "snappyHexMesh.log", timeout_s)
-        checkmesh = oc._run(f"mpirun -np {cfg.n_subdomains} checkMesh -parallel",
-                            run, bashrc, "checkMesh.log", timeout_s)
         solver_log = oc._run(f"mpirun -np {cfg.n_subdomains} adjointOptimisationFoam -parallel",
                              run, bashrc, "adjoint.log", timeout_s)
         oc._run("reconstructPar -latestTime", run, bashrc, "reconstructPar.log", timeout_s)
