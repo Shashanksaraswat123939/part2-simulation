@@ -846,7 +846,14 @@ def invoke_adjoint(
             sens_file.read_text(encoding="utf-8", errors="replace"), mesh_points
         )
         out = map_sensitivity_to_stl_vertices(
-            stl_path, sens_points, sens_values, cfg.max_point_match_distance_m
+            stl_path, sens_points, sens_values,
+            cfg.max_point_match_distance_m,
+            # Was omitted, so this silently fell back to the 5% default while
+            # AdjointRunConfig.max_unmapped_fraction was set to 0.25 and looked
+            # honoured. A sed patch had updated the dataclass field and the
+            # function signature but not this call; verifying "the field exists"
+            # and "the parameter exists" proved nothing about the wiring.
+            cfg.max_unmapped_fraction,
         )
         succeeded = True
         return out

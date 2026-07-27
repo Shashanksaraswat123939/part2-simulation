@@ -173,6 +173,25 @@ def test_adjoint_momentum_is_relaxed_harder_than_the_primal():
     assert ua < u, f"Ua relaxation {ua} should be below the primal U {u}"
     assert ua <= 0.5, f"Ua relaxation {ua} is too aggressive for a bluff body"
 
+
+def test_invoke_adjoint_actually_passes_max_unmapped_fraction():
+    """The config value must reach map_sensitivity_to_stl_vertices.
+
+    It did not: the dataclass field and the function signature both existed and
+    both looked right, but invoke_adjoint's CALL omitted the argument, so it
+    silently used the 5% default while the config said 25%. Verifying that a
+    field exists proves nothing about whether it is wired. Assert on the call.
+    """
+    import inspect, re
+    src = inspect.getsource(oa.invoke_adjoint)
+    call = re.search(r"map_sensitivity_to_stl_vertices\((.*?)\)", src, re.S)
+    assert call, "call site not found"
+    args = call.group(1)
+    assert "max_unmapped_fraction" in args, (
+        "invoke_adjoint does not pass cfg.max_unmapped_fraction; the config "
+        "value would be silently ignored")
+    assert "max_point_match_distance_m" in args
+
 def test_fv_solution_has_ma_solver():
     # Regression: an earlier version crashed at the mesh-movement/eikonal
     # sensitivity step with "Entry 'ma' not found in dictionary
