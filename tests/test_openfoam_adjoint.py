@@ -192,6 +192,67 @@ def test_invoke_adjoint_actually_passes_max_unmapped_fraction():
         "value would be silently ignored")
     assert "max_point_match_distance_m" in args
 
+def _write_ua(dirpath, mags):
+    """Minimal volVectorField Ua with the given x-magnitudes."""
+    d = Path(dirpath)
+    d.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(f"({m} 0 0)" for m in mags)
+    (d / "Ua").write_text(
+        "FoamFile\n{\n version 2.0;\n format ascii;\n class volVectorField;\n"
+        " object Ua;\n}\n\ndimensions      [0 1 -1 0 0 0 0];\n\n"
+        f"internalField   nonuniform List<vector>\n{len(mags)}\n(\n{body}\n)\n;\n\n"
+        "boundaryField\n{\n}\n", encoding="utf-8")
+
+
+def test_check_adjoint_magnitude_accepts_a_sane_solve():
+    # Measured with ATCModel=cancel: |Ua| max 6.96 m/s, p50 0.28, against a
+    # 20 m/s freestream. That must pass.
+    with tempfile.TemporaryDirectory() as td:
+        _write_ua(os.path.join(td, "300"), [0.28, 1.65, 6.96])
+        oa.check_adjoint_magnitude(td, AdjointRunConfig())
+
+
+def test_check_adjoint_magnitude_catches_the_diverged_solve():
+    """The 2026-07-27 failure: |Ua| ~ 1e38 reported as converged.
+
+    Residuals said converged for hundreds of iterations (a constant relative
+    residual is exactly what steady exponential growth produces), and the
+    resulting 1e50 sensitivity was normalised into silence rather than raising.
+    Nothing in the pipeline noticed. This is the trap.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        _write_ua(os.path.join(td, "300"), [1.0, 6.19e38, 7.2e45])
+        try:
+            oa.check_adjoint_magnitude(td, AdjointRunConfig())
+        except RuntimeError as exc:
+            assert "DIVERGED" in str(exc)
+            assert "ATCModel" in str(exc), "error should name the usual cause"
+            return
+        raise AssertionError("diverged adjoint was not detected")
+
+
+def test_check_adjoint_magnitude_ignores_uniform_unsolved_fields():
+    # A time dir holding only the uniform initial Ua must not be mistaken for a
+    # solution -- the real run writes 0/, 150/ and 300/ and only one is solved.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td) / "0"
+        d.mkdir(parents=True)
+        (d / "Ua").write_text(
+            "dimensions [0 1 -1 0 0 0 0];\ninternalField   uniform (0 0 0);\n",
+            encoding="utf-8")
+        oa.check_adjoint_magnitude(td, AdjointRunConfig())
+
+
+def test_invoke_adjoint_actually_calls_the_divergence_check():
+    # Same lesson as max_unmapped_fraction: assert on the CALL, not that the
+    # function exists.
+    import inspect
+    src = inspect.getsource(oa.invoke_adjoint)
+    assert "check_adjoint_magnitude(" in src, (
+        "invoke_adjoint does not call check_adjoint_magnitude; a diverged "
+        "adjoint would be read as a gradient")
+
+
 def test_fv_solution_has_ma_solver():
     # Regression: an earlier version crashed at the mesh-movement/eikonal
     # sensitivity step with "Entry 'ma' not found in dictionary

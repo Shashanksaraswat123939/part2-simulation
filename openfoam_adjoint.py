@@ -101,6 +101,12 @@ class AdjointRunConfig:
     # CFD mesh is too coarse to represent the body and we stop rather than
     # optimise a surface that is mostly held still.
     max_unmapped_fraction: float = 0.05
+    # Divergence trap for the adjoint solve, as a multiple of the freestream.
+    # See check_adjoint_magnitude: the residual check cannot detect steady
+    # exponential growth, and a diverged adjoint yields a sensitivity field that
+    # unit-RMS normalisation turns into silence rather than into an error.
+    # Loose on purpose -- a real solve sits at |Ua| ~ O(1) m/s here.
+    max_adjoint_velocity_ratio: float = 1.0e4
 
     def __post_init__(self):
         if self.resolution not in oc.RESOLUTION_REFINEMENT:
@@ -824,6 +830,71 @@ def map_sensitivity_to_stl_vertices(
 # Top-level entry point
 # ---------------------------------------------------------------------------
 
+def _parse_foam_vector_magnitudes(text: str) -> Optional[np.ndarray]:
+    """|v| per cell from an OpenFOAM ASCII volVectorField, or None if uniform."""
+    m = re.search(
+        r"internalField\s+nonuniform\s+List<vector>\s*\n?\s*(\d+)\s*\n\((.*?)\n\)\s*;",
+        text, re.S,
+    )
+    if not m:
+        return None
+    rows = [ln.strip() for ln in m.group(2).splitlines() if ln.strip().startswith("(")]
+    if not rows:
+        return None
+    vals = np.array([[float(x) for x in r.strip("() ").split()] for r in rows])
+    return np.linalg.norm(vals, axis=1)
+
+
+def check_adjoint_magnitude(run_dir: str, cfg: "AdjointRunConfig") -> None:
+    """Fail a DIVERGED adjoint solve that the residual check calls converged.
+
+    THE FAILURE THIS EXISTS FOR (measured 2026-07-27). The adjoint velocity
+    settled at |Ua| p50 = 6.2e+38, max 7.2e+45, and the run was reported
+    converged the whole way: `Solving for Uax, Initial residual = 0.00036110203`
+    repeated identically for hundreds of iterations. A CONSTANT relative
+    residual does not mean a converged solution -- it means the field is
+    growing by a constant factor each iteration, so |r|/|b| never changes.
+    ~1.09x per iteration reaches 1e38 over 1000 iterations while every
+    residualControl in the case reports success.
+
+    Downstream this produced sensitivities of order 1e50 in which the top ten
+    mesh points carried 99.97% of the sum of squares. Because combine_gradients
+    normalises to unit RMS, that silently zeroed the aero term and the optimiser
+    ran on the mass gradient alone for every iteration ever executed.
+
+    Ua has dimensions of velocity, so the freestream sets the scale: an adjoint
+    velocity thousands of times the freestream is not a converged adjoint. The
+    bound is deliberately loose (default 1e4 x U_inf) -- this is a divergence
+    trap, not an accuracy check, and it must not fire on a merely ill-conditioned
+    but usable solve.
+    """
+    root = Path(run_dir)
+    candidates = [p for p in root.glob("*/Ua") if p.is_file()]
+    if not candidates:
+        return  # nothing written; find_sensitivity_file reports the real error
+    mags = None
+    for p in sorted(candidates, key=lambda q: q.stat().st_mtime, reverse=True):
+        mags = _parse_foam_vector_magnitudes(p.read_text(errors="replace"))
+        if mags is not None:
+            break
+    if mags is None:
+        return  # only uniform (unsolved) Ua present
+
+    limit = cfg.max_adjoint_velocity_ratio * cfg.reference_speed_mps
+    peak = float(mags.max())
+    if not np.isfinite(peak) or peak > limit:
+        raise RuntimeError(
+            f"adjoint solve DIVERGED: max|Ua| = {peak:.4e} m/s against a "
+            f"{cfg.reference_speed_mps} m/s freestream (limit "
+            f"{limit:.4e} = {cfg.max_adjoint_velocity_ratio}x). Residual "
+            f"convergence does not rule this out: a constant relative residual "
+            f"is the signature of steady exponential growth. The sensitivity "
+            f"from this solve is not a gradient. Check the ATCModel setting — "
+            f"adjoint transpose convection is the usual cause around a bluff "
+            f"body with a large separated wake. Run dir kept: {run_dir}"
+        )
+
+
 def invoke_adjoint(
     stl_path: str,
     case_dir: str,
@@ -862,6 +933,7 @@ def invoke_adjoint(
     succeeded = False
     try:
         run_adjoint_stages(run_dir, cfg, resolved_bashrc)
+        check_adjoint_magnitude(run_dir, cfg)
         sens_file = find_sensitivity_file(run_dir)
         mesh_points = read_polymesh_points(run_dir)
         sens_points, sens_values = parse_sensitivity_points(
