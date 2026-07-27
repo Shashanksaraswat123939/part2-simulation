@@ -988,8 +988,28 @@ relaxationFactors
     {
         U               0.9;
         "(k|omega)"     0.7;
-        Ua              0.9;
-        "(ka|wa)"       0.7;
+        // ADJOINT MOMENTUM IS RELAXED HARDER THAN THE PRIMAL. Was 0.9 -- the
+        // same as the primal -- which is aggressive for an adjoint, and this
+        // geometry is the worst case for it: a bluff rectangular block with
+        // sharp edges in ground effect, separating off every corner.
+        //
+        // Evidence it is the adjoint MOMENTUM and not the turbulence model:
+        // the SIGFPE landed in divDevReff -> fvmLaplacian(nuEff, Ua) with BOTH
+        // adjointkOmegaSST and adjointLaminar, at adjoint iteration ~277 and
+        // ~282 respectively -- i.e. model-independent and reproducible. Mesh
+        // was clean both times (non-orthogonality 64.6, skewness 2.8, checkMesh
+        // "Mesh OK"). And Uaz never converged: 1 -> 0.44 -> 0.10 -> 0.125, a
+        // mode plateauing near 10% and oscillating until it overflows, while
+        // Uax/Uay sat at ~0.002.
+        //
+        // 0.4 is a NUMERICAL stabilisation -- it changes nothing about the
+        // objective or the physics, only how far each iteration steps. It is
+        // deliberately tried before ATCModel `cancel`, which would stabilise by
+        // DROPPING the adjoint transpose convection term (a real approximation
+        // to the sensitivity). Exhaust numerics before approximating physics.
+        // If this still diverges, `cancel` is the next lever.
+        Ua              0.4;
+        "(ka|wa)"       0.5;
     }
 }
 """

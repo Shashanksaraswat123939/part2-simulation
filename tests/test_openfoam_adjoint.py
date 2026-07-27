@@ -155,6 +155,24 @@ def test_adjoint_fields_cover_all_seven_patches():
                 assert patch in text, f"{name} missing patch {patch}"
 
 
+
+def test_adjoint_momentum_is_relaxed_harder_than_the_primal():
+    """Ua relaxation must stay below the primal's U.
+
+    The SIGFPE landed in divDevReff -> fvmLaplacian(nuEff, Ua) with BOTH
+    adjointkOmegaSST and adjointLaminar, at adjoint iteration ~277/~282 --
+    model-independent, reproducible, on a clean mesh. Uaz plateaued near 10%
+    residual and oscillated until overflow while Uax/Uay sat at 0.002. That is
+    the adjoint momentum equation being stepped too hard, not a turbulence
+    problem.
+    """
+    import re
+    s = oa._FV_SOLUTION_ADJOINT
+    ua = float(re.search(r"^\s*Ua\s+([0-9.]+);", s, re.M).group(1))
+    u = float(re.search(r"^\s*U\s+([0-9.]+);", s, re.M).group(1))
+    assert ua < u, f"Ua relaxation {ua} should be below the primal U {u}"
+    assert ua <= 0.5, f"Ua relaxation {ua} is too aggressive for a bluff body"
+
 def test_fv_solution_has_ma_solver():
     # Regression: an earlier version crashed at the mesh-movement/eikonal
     # sensitivity step with "Entry 'ma' not found in dictionary
