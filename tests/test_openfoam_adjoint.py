@@ -55,13 +55,37 @@ def test_as_forward_config_forces_komega_sst():
     assert fwd.resolution == "fine"
 
 
-def test_adjoint_ras_properties_names_komega_sst():
+def test_adjoint_ras_model_is_frozen_turbulence():
+    """adjointLaminar, NOT adjointkOmegaSST.
+
+    adjointkOmegaSST crashed with SIGFPE inside its own divDevReff at adjoint
+    iteration 277 of 500, after a healthy primal and healthy pa/Ua/ka/wa. On the
+    installed v2412, adjointLaminar is used by 14 shipped tutorials against
+    adjointkOmegaSST's 2, and no tutorial freezes via `adjointTurbulence off`.
+
+    Frozen turbulence assumes d(nu_t)/d(shape) = 0. That is nearly free here:
+    combine_gradients normalises the aero field to unit RMS, so only the
+    spatial pattern and sign survive into the level-set update anyway.
+    """
     body = oa.build_adjoint_ras_properties()
-    assert "adjointkOmegaSST" in body
+    assert "adjointLaminar" in body
+    assert "adjointkOmegaSST" not in body, (
+        "adjointkOmegaSST SIGFPEs in divDevReff on this geometry")
     assert "adjointTurbulence on" in body
-    # No SA-specific coeffs sub-dict for this pairing (verified against the
-    # naca0012 kOmegaSST tutorial's adjointRASProperties).
     assert "adjointSpalartAllmarasCoeffs" not in body
+
+
+def test_primal_stays_komega_sst():
+    """Only the ADJOINT turbulence is frozen -- the primal still produces the
+    drag VALUE and must keep the model the forward solve validated."""
+    assert oa.AdjointRunConfig().as_forward_config().turbulence_model == "kOmegaSST"
+    assert "kOmegaSST" in oc_turb(), "primal turbulenceProperties lost kOmegaSST"
+
+
+def oc_turb():
+    import openfoam_case as _oc
+    return _oc.build_turbulence_properties(
+        oa.AdjointRunConfig().as_forward_config())
 
 
 def test_adjoint_control_dict_end_time_is_sum_of_iters():

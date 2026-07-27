@@ -148,8 +148,40 @@ def build_adjoint_ras_properties() -> str:
     # object name must match the FILENAME the dict is written to
     # (constant/adjointRASProperties), or a strict IOdictionary read can reject
     # it. It said "adjointTurbulenceProperties" before.
+    #
+    # FROZEN TURBULENCE. Changed 2026-07-27 from adjointkOmegaSST, which
+    # crashed with SIGFPE at adjoint iteration 277 of 500:
+    #
+    #     #6  gaussLaplacianScheme<Vector,double>::fvmLaplacian(...)
+    #     #9  adjointkOmegaSST::divDevReff(...)
+    #     #13 adjointSolverManager::solveAdjointEquations()
+    #
+    # Everything up to that point was healthy -- the primal converged, pa went
+    # 0.506 -> 0.003, Ua ~1e-4, ka/wa small and well behaved. The failure is
+    # specifically inside the adjoint turbulence model's effective-viscosity
+    # term on this geometry.
+    #
+    # Two facts decided the replacement, both read off the installed release
+    # rather than assumed: adjointLaminar is used by 14 shipped tutorials
+    # against adjointkOmegaSST's 2, and NO tutorial uses `adjointTurbulence
+    # off`, so freezing via that switch is not the idiom -- adjointLaminar is.
+    # (adjointSpalartAllmaras has 36, but the adjoint turbulence model must
+    # match the primal, and our primal is kOmegaSST.)
+    #
+    # What frozen turbulence costs: it assumes d(nu_t)/d(shape) = 0, so the
+    # sensitivity ignores how the turbulent viscosity field responds to moving
+    # the surface. It is standard industrial practice and normally preserves
+    # the sensitivity DIRECTION while biasing its magnitude.
+    #
+    # For THIS pipeline the cost is close to nil: phi_updater.combine_gradients
+    # normalises the aero field to unit RMS before weighting, so the magnitude
+    # is discarded anyway and only the spatial pattern and sign survive. We are
+    # trading away a quantity the level-set update does not use.
+    #
+    # The PRIMAL stays kOmegaSST -- it converges and produces the drag VALUE.
+    # Only the adjoint's turbulence treatment is frozen.
     return oc._header("dictionary", "adjointRASProperties") + """
-adjointRASModel adjointkOmegaSST;
+adjointRASModel adjointLaminar;
 
 adjointTurbulence on;
 """
