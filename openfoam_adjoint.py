@@ -365,6 +365,28 @@ optimisation
         // per-face and would not line up.
         sensitivityType    {SENSITIVITY_TYPE};
         patches            (car);
+        // includeMeshMovement DEFAULTS TO TRUE (v2412
+        // sensitivityShapeESI.C:110). Leaving it on adds the adjoint
+        // mesh-movement field `ma` to the sensitivity chain, and on this
+        // external-aero case that field blows up: measured `Max ma 8.57e+46`
+        // from its FIRST iteration, giving a surface sensitivity spanning
+        // -1.13e+57..4.74e+55 in which the TOP TEN POINTS carried 99.33% of
+        // the sum of squares.
+        //
+        // That silently killed the aero term. combine_gradients normalises
+        // each gradient to unit RMS, so ten spikes absorbing 99.33% of the
+        // norm rescale the real signal to ~0.7% of it; the p99.9 clip in
+        // apply_adjoint_to_unified then trims the spikes as well. Measured
+        // consequence: flipping the sign of the whole aero gradient changed
+        // the resulting geometry by 0.369 mm^3 out of a 932 mm^3 step —
+        // 0.04%. The optimiser was running on the mass gradient alone.
+        //
+        // Every shipped v2412 shapeOptimisation tutorial (sbend, naca0012
+        // drag + moment) sets this false; only the naca0012 sensitivity-MAP
+        // demo leaves it true. The adjoint FLOW solve is healthy either way
+        // (Ua/pa residuals converged, no bounding) — it is only this
+        // auxiliary chain that is bad.
+        includeMeshMovement false;
         adjointEikonalSolver
         {{
             tolerance 1.e-5;
