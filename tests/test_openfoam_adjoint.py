@@ -192,6 +192,27 @@ def test_invoke_adjoint_actually_passes_max_unmapped_fraction():
         "value would be silently ignored")
     assert "max_point_match_distance_m" in args
 
+def test_atc_smoothing_is_measured_not_copied_from_the_tutorial():
+    """nSmooth 0 (the sensitivityMaps/motorBike value) DIVERGES on this case.
+
+    Measured over 150 adjoint iterations: nSmooth 0 -> |Ua| max 4.33e+13 with
+    99.97% of the sensitivity's sum of squares in ten points; nSmooth 10 ->
+    |Ua| max 28.1 and 20.30%. Restoring the tutorial value silently returns the
+    optimiser to running on the mass gradient alone, because the diverged
+    sensitivity is normalised into silence rather than raising.
+    """
+    import re
+    d = oa.build_optimisation_dict(AdjointRunConfig(), ref_area_half=0.00375)
+    m = re.search(r"nSmooth\s+(\d+)\s*;", d)
+    assert m, "nSmooth entry missing from optimisationDict"
+    assert int(m.group(1)) >= 3, (
+        f"nSmooth is {m.group(1)}; anything below 3 diverged on the measured "
+        f"case. See the ladder in build_optimisation_dict's ATCModel comment.")
+    assert "includeMeshMovement false" in d, (
+        "includeMeshMovement defaults to TRUE and pulls the diverging adjoint "
+        "mesh-movement field into the sensitivity chain")
+
+
 def _write_ua(dirpath, mags):
     """Minimal volVectorField Ua with the given x-magnitudes."""
     d = Path(dirpath)

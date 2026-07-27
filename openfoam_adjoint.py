@@ -323,17 +323,44 @@ adjointManagers
                     }}
                 }}
 
-                // Matches sensitivityMaps/motorBike (v2412) rather than the
-                // bare `ATCModel standard;` this used to carry. motorBike is
-                // the shipped EXTERNAL-AERO case, so its ATC treatment is the
-                // right reference: zeroing the adjoint transpose convection on
-                // wall/patch boundaries is what keeps the adjoint stable
-                // around a bluff body.
+                // ADJOINT TRANSPOSE CONVECTION. nSmooth is the single setting
+                // that decides whether this solver produces a gradient or
+                // garbage, so it is set from measurement, not from a tutorial.
+                //
+                // Copying sensitivityMaps/motorBike gave nSmooth 0, and the
+                // adjoint DIVERGED: |Ua| reached p50 6.2e+38 / max 7.2e+45
+                // while every residualControl reported convergence, because a
+                // field growing at a constant factor per iteration holds its
+                // RELATIVE residual constant (Uax sat at exactly 0.00036110203
+                // for hundreds of iterations). The 1e50 sensitivity that came
+                // out had 99.97% of its sum of squares in ten mesh points, so
+                // unit-RMS normalisation downstream turned it into silence
+                // rather than an error.
+                //
+                // Measured on this case, 150 adjoint iterations each:
+                //   nSmooth  0   |Ua| max 4.33e+13   sens top10 99.97%  (diverges)
+                //   nSmooth  1   |Ua| max 8.91e+04   sens top10 99.96%  (diverges)
+                //   nSmooth  3   |Ua| max 7.82e+01   sens top10 24.00%  (converges)
+                //   nSmooth 10   |Ua| max 2.81e+01   sens top10 20.30%  (converges)
+                //   ATCModel cancel  |Ua| max 6.96   sens top10 20.38%  (converges)
+                //
+                // nSmooth 10 matches `cancel` on sensitivity quality without
+                // deleting the ATC term, so the gradient stays CONSISTENT --
+                // smoothing the term is a far milder approximation than
+                // dropping it. |Ua| max 28 m/s against a 20 m/s freestream is
+                // physically sane.
+                //
+                // A bluff body with a large separated wake is the classic ATC
+                // instability, and this car is a brick with a 1.5 mm ride-height
+                // gap spanned by ~2.7 cells. If a future geometry diverges again,
+                // check_adjoint_magnitude will raise rather than let it through;
+                // the ladder above is the thing to re-run, and `cancel` is the
+                // fallback if smoothing stops being enough.
                 ATCModel
                 {{
                     ATCModel          standard;
                     extraConvection   0;
-                    nSmooth           0;
+                    nSmooth           10;
                     zeroATCPatchTypes (wall patch);
                     maskType          pointCells;
                 }}
