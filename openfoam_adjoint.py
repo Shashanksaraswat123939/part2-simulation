@@ -105,8 +105,16 @@ class AdjointRunConfig:
     # See check_adjoint_magnitude: the residual check cannot detect steady
     # exponential growth, and a diverged adjoint yields a sensitivity field that
     # unit-RMS normalisation turns into silence rather than into an error.
-    # Loose on purpose -- a real solve sits at |Ua| ~ O(1) m/s here.
-    max_adjoint_velocity_ratio: float = 1.0e4
+    #
+    # Set from measurement. Healthy solves observed on this case: |Ua| max
+    # 6.96 (ATCModel cancel), 28.1 (nSmooth 10), 78.2 (nSmooth 3), all with
+    # p50 well under 1 m/s. A diverging one reached max 2.82e+03 at 1000
+    # iterations and 7.2e+45 unsmoothed. The first version of this field used
+    # 1.0e4, chosen before any healthy solve had been measured, and it let the
+    # 2.82e+03 case through. 100x freestream = 2000 m/s is still ~25x above the
+    # worst healthy maximum seen, so it stays a runaway trap rather than an
+    # accuracy check, but it no longer sits above the failures it exists for.
+    max_adjoint_velocity_ratio: float = 100.0
 
     def __post_init__(self):
         if self.resolution not in oc.RESOLUTION_REFINEMENT:
