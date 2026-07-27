@@ -328,10 +328,59 @@ def location_in_mesh(
     bounds: tuple[tuple[float, float, float], tuple[float, float, float]]
 ) -> tuple[float, float, float]:
     """A point guaranteed to be in the fluid (inside the box, outside the car):
-    upstream of the car, above the ground, just off the symmetry plane."""
+    upstream of the car, above the ground, just off the symmetry plane.
+
+    The multipliers are deliberately NOT round numbers, and that is the whole
+    point. This geometry makes the background mesh perfectly self-similar:
+
+        domain width = 12*lx           (domain_box: -3lx .. +8lx around lx)
+        cell size    = lx/12           (build_case)
+        => nx        = 144  ALWAYS, for any car length
+
+    With the old `x0 - 1.0*lx`, the point landed at exactly 2lx/12lx = 1/6 of
+    the domain, i.e. cell index 144/6 = 24.0 -- EXACTLY on a cell face. Whether
+    snappyHexMesh's findCell() then succeeds is decided by floating-point
+    rounding, so it worked on one geometry and failed on the next:
+
+        --> FOAM FATAL ERROR
+        Point (-0.23149355 0.026552572 0.033000793) is not inside the mesh
+        or on a face or edge.
+        Bounding box of the mesh: (-0.69524729 0 0) (2.0872751 0.21162078 ...)
+
+    -- with the point plainly inside that bounding box. Iteration 1 meshed
+    fine; iteration 2, after the phi update moved the surface by 0.3% in
+    volume, flipped the rounding and snappy refused. Found 2026-07-27.
+
+    Nudging the multipliers off round numbers is NOT enough on its own: nx is
+    pinned at 144 but ny and nz follow the car's aspect ratio, so a fraction
+    that is safely interior in x can still land on a face in y for a different
+    car (caught by the test at lx=300 mm, y index 0.9866). So the point is
+    snapped to the CENTRE of whichever background cell contains it -- the
+    furthest it can possibly be from every face, for any geometry.
+    """
     (x0, y0, z0), (x1, y1, z1) = bounds
     lx = max(x1 - x0, 1e-6)
-    return (x0 - 1.0 * lx, 0.5 * (y0 + y1) + 0.25 * (y1 - y0) + 1e-4, 0.5 * (z0 + z1))
+
+    # Where we want it: upstream of the car, off the symmetry plane, mid-height.
+    want = (
+        x0 - 1.2731 * lx,
+        0.5 * (y0 + y1) + 0.2371 * (y1 - y0) + 1e-4,
+        0.4871 * (z0 + z1),
+    )
+
+    # Snap to the containing cell's centre. Must mirror build_case's cell_size
+    # and build_blockmesh_dict's rounding exactly, or the snap targets a grid
+    # that does not exist.
+    box_min, box_max = domain_box(bounds)
+    nominal = max(lx / 12.0, 1e-4)
+    out = []
+    for ax in range(3):
+        lo, hi = box_min[ax], box_max[ax]
+        n = max(int(round((hi - lo) / nominal)), 1)
+        cell = (hi - lo) / n
+        idx = min(max(int((want[ax] - lo) / cell), 0), n - 1)
+        out.append(lo + (idx + 0.5) * cell)
+    return tuple(out)
 
 
 def build_blockmesh_dict(

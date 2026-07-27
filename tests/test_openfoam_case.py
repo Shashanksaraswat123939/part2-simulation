@@ -127,6 +127,36 @@ def test_snappy_layers_toggle():
     assert "addLayers       false" in without
 
 
+def test_location_in_mesh_never_lands_on_a_cell_face():
+    """snappyHexMesh findCell() fails intermittently for points on cell faces.
+
+    This background mesh is perfectly self-similar -- domain width 12*lx, cell
+    lx/12, so nx == 144 for ANY car length. The old x0 - 1.0*lx put the point at
+    exactly 1/6 of the domain = cell index 24.0, dead on a face, and whether
+    snappy found it came down to floating-point rounding. It meshed iteration 1
+    and refused iteration 2 after a 0.3% volume change.
+    """
+    import re
+    for lx_mm in (120.0, 150.0, 232.3, 232.26, 300.0, 199.999, 401.7):
+        lx = lx_mm / 1000.0
+        bounds = ((0.0002, 0.0, 0.0017), (0.0002 + lx, 0.0353, 0.0643))
+        loc = oc.location_in_mesh(bounds)
+        bmin, bmax = oc.domain_box(bounds)
+        d = oc.build_blockmesh_dict(bmin, bmax, max(lx / 12.0, 1e-4))
+        nx, ny, nz = (int(v) for v in
+                      re.search(r"hex \(0 1 2 3 4 5 6 7\) \((\d+) (\d+) (\d+)\)",
+                                d).groups())
+        for ax, n in zip(range(3), (nx, ny, nz)):
+            width = bmax[ax] - bmin[ax]
+            idx = (loc[ax] - bmin[ax]) / width * n
+            # snapped to a cell CENTRE -> index fraction must be ~0.5
+            assert 0.4 < idx % 1.0 < 0.6, (
+                f"lx={lx_mm}mm axis {'xyz'[ax]}: locationInMesh at cell index "
+                f"{idx:.4f} -- too close to a cell face; snappy findCell() is "
+                "a coin flip there")
+            assert 0 < idx < n, f"locationInMesh outside the mesh on axis {ax}"
+
+
 def test_write_control_is_a_valid_time_enum():
     """controlDict's writeControl must be a Time::writeControls value.
 
