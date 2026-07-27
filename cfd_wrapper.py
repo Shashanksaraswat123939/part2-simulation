@@ -221,6 +221,7 @@ def run_half_car_adjoint(
     keep_run_dir: bool = False,
     stage_timeout_s: int = 14400,
     underbody_refinement_level: int = 1,
+    max_unmapped_fraction: float = 0.05,
 ) -> np.ndarray:
     """Drag-adjoint surface sensitivity for a half-car STL. This is what
     Part 3's `pipeline_interface.real_bindings.run_adjoint` needs and what
@@ -273,6 +274,7 @@ def run_half_car_adjoint(
         keep_run_dir=keep_run_dir,
         stage_timeout_s=stage_timeout_s,
         underbody_refinement_level=underbody_refinement_level,
+        max_unmapped_fraction=max_unmapped_fraction,
     )
     case_dir = Path(__file__).resolve().parent / "cfd_case_template"
 

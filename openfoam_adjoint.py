@@ -95,6 +95,12 @@ class AdjointRunConfig:
     # vertex are treated as unmapped and raise, rather than silently pairing
     # a sensitivity value with the wrong point.
     max_point_match_distance_m: float = 5e-3
+    # Fraction of STL vertices allowed to have NO adjoint sensitivity point
+    # within max_point_match_distance_m. Those are frozen (zero sensitivity)
+    # rather than fatal -- see map_sensitivity_to_stl_vertices. Above this, the
+    # CFD mesh is too coarse to represent the body and we stop rather than
+    # optimise a surface that is mostly held still.
+    max_unmapped_fraction: float = 0.05
 
     def __post_init__(self):
         if self.resolution not in oc.RESOLUTION_REFINEMENT:
@@ -704,6 +710,7 @@ def map_sensitivity_to_stl_vertices(
     sens_points: np.ndarray,
     sens_values: np.ndarray,
     max_distance_m: float,
+    max_unmapped_fraction: float = 0.05,
 ) -> np.ndarray:
     """Nearest-neighbour-map CFD-mesh sensitivity points onto the ORIGINAL
     STL's vertex order, so the result lines up 1:1 with
@@ -723,15 +730,40 @@ def map_sensitivity_to_stl_vertices(
     tree = cKDTree(sens_points)
     dist, idx = tree.query(stl_verts, k=1)
     bad = dist > max_distance_m
-    if np.any(bad):
-        n_bad = int(np.sum(bad))
+    n_bad = int(np.sum(bad))
+    frac = n_bad / max(len(stl_verts), 1)
+
+    # Some orphans are EXPECTED and zeroing them is the honest answer. The STL
+    # carries interior geometry the CFD mesh does not resolve -- the O18.25 mm
+    # cartridge bore, the 3.175 mm halo pocket recess, the ballast slot -- and a
+    # vertex with no nearby CFD point simply has no computed sensitivity. Zero
+    # means "no information, do not move this point", which is safe; inventing a
+    # value from a distant point would corrupt the phi update, which is what the
+    # original hard failure was protecting against.
+    #
+    # Measured on the first real adjoint solve (2026-07-26): at `coarse`
+    # resolution the car patch had only 9,885 points against 360,000 STL
+    # vertices, and 77,355 (21.5%) were orphaned -- so hard-failing meant NO
+    # iteration could ever complete. The fraction is the real signal: a few
+    # percent is unresolved recesses, a large fraction means the mesh does not
+    # cover the body at all (or units/geometry drifted), which still raises.
+    if frac > max_unmapped_fraction:
         raise ValueError(
-            f"{n_bad}/{len(stl_verts)} STL vertices have no adjoint sensitivity "
-            f"point within {max_distance_m} m. The adjoint mesh may not cover "
-            "the full surface, or geometry drifted between the STL and the "
-            "meshed case."
+            f"{n_bad}/{len(stl_verts)} STL vertices ({frac*100:.1f}%) have no "
+            f"adjoint sensitivity point within {max_distance_m} m, above the "
+            f"{max_unmapped_fraction*100:.0f}% limit. Either the CFD resolution "
+            "is too coarse to represent this geometry, or the STL and the meshed "
+            "case have drifted apart. Raise `resolution`, or raise "
+            "AdjointRunConfig.max_unmapped_fraction if you accept the surface "
+            "being partly frozen."
         )
-    return sens_values[idx]
+    out = sens_values[idx].astype(np.float64, copy=True)
+    if n_bad:
+        out[bad] = 0.0
+        print(f"[openfoam_adjoint] {n_bad}/{len(stl_verts)} vertices "
+              f"({frac*100:.2f}%) had no sensitivity within "
+              f"{max_distance_m*1000:.1f} mm -- frozen (zero sensitivity)")
+    return out
 
 
 # ---------------------------------------------------------------------------
