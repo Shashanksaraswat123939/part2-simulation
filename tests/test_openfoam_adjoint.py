@@ -96,6 +96,31 @@ def test_optimisation_dict_has_single_sensitivity_type_and_consistent_solve():
     assert d.count("consistent yes;") == 2  # primal AND adjoint solversControls
 
 
+
+def test_turbulence_transport_is_upwind_not_linearUpwind():
+    """Regression guard for the SIGFPE on the first medium-resolution solve.
+
+    linearUpwind on k/omega undershoots to negative omega near walls; bounding
+    clips it, but the SST blending functions multiply k/omega and that is where
+    Foam::multiply threw. omega reached 2.6e+135 and adjointOptimisationFoam
+    died in solvePrimalEquations before ever reaching the adjoint.
+
+    The forward case solves the same model on the same geometry and converges
+    using `bounded Gauss upwind` for both, so the adjoint must match it.
+    """
+    import re
+    s = oa._FV_SCHEMES_ADJOINT
+    for field in ("div(phi,k)", "div(phi,omega)", "div(-phi,ka)", "div(-phi,wa)"):
+        m = re.search(re.escape(field) + r"\s+([^;]+);", s)
+        assert m, f"{field} missing from adjoint fvSchemes"
+        scheme = m.group(1)
+        assert "linearUpwind" not in scheme, (
+            f"{field} uses {scheme.strip()!r}; linearUpwind on turbulence "
+            "transport diverged to omega=1e135 and crashed the solver")
+        assert "upwind" in scheme, f"{field} should be upwind, got {scheme.strip()!r}"
+    # momentum legitimately keeps linearUpwind -- U was never the problem
+    assert "linearUpwind" in re.search(r"div\(phi,U\)\s+([^;]+);", s).group(1)
+
 def test_adjoint_fields_cover_all_seven_patches():
     with tempfile.TemporaryDirectory() as d:
         zero_dir = Path(d)

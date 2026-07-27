@@ -841,12 +841,36 @@ divSchemes
 {
     default            Gauss linear;
 
+    // TURBULENCE TRANSPORT IS UPWIND, NOT linearUpwind. Changed 2026-07-27
+    // after adjointOptimisationFoam died with SIGFPE on the first medium-
+    // resolution run:
+    //
+    //     bounding omega, min: -3.1e+119  max: 2.6e+135
+    //     #3 Foam::multiply(...)  in libOpenFOAM.so
+    //     #4 ... libincompressibleTurbulenceModels.so
+    //     #7 Foam::simple::mainIter()  in libadjointOptimisation.so
+    //    #10 Foam::optimisationManager::solvePrimalEquations()
+    //
+    // It never reached the adjoint at all -- omega blew up in the PRIMAL solve
+    // at step 77 of 500. linearUpwind undershoots to negative omega near walls;
+    // `bounding` clips it, but the SST blending functions multiply k/omega and
+    // that product is where the FPE lands.
+    //
+    // The decisive evidence is that the FORWARD case solves the same kOmegaSST
+    // model on the same geometry and converges (T_raw = 3.19 s) -- and it uses
+    // `bounded Gauss upwind` for k and omega. Matching it here is the smallest
+    // change consistent with something that demonstrably works on this
+    // geometry. Momentum keeps linearUpwind: U was never the problem.
+    //
+    // The shipped tutorials do use linearUpwind for these, but they are tuned
+    // cases (motorBike, sbend). A rectangular billet with sharp edges is a much
+    // harsher test than either.
     div(phi,U)         bounded Gauss linearUpwind gradUConv;
-    div(phi,k)         bounded Gauss linearUpwind gradKConv;
-    div(phi,omega)     bounded Gauss linearUpwind gradOmegaConv;
+    div(phi,k)         bounded Gauss upwind;
+    div(phi,omega)     bounded Gauss upwind;
     div(-phi,Ua)       bounded Gauss linearUpwind gradUaConv;
-    div(-phi,ka)       bounded Gauss linearUpwind gradKaConv;
-    div(-phi,wa)       bounded Gauss linearUpwind gradWaConv;
+    div(-phi,ka)       bounded Gauss upwind;
+    div(-phi,wa)       bounded Gauss upwind;
 }
 
 laplacianSchemes
