@@ -30,6 +30,27 @@ from physics_contract import (
 # averaging window, or an unsteady solver.
 MAX_FORCE_OSCILLATION: float = 0.05
 
+# Final p-residual at or below which a solve counts as converged.
+#
+# SET FROM MEASUREMENT, and the value is a statement about this geometry rather
+# than a preference. simpleFoam is a STEADY solver and this car is a brick whose
+# wake is not steady, so the residual PLATEAUS instead of descending. Measured
+# on one fixed STL (2026-07-27):
+#     coarse (103k cells)          4.4e-4
+#     medium (389k, production)    2.1e-3
+#     medium + underbody (1.94M)   3.2e-3
+# The old hardcoded 1e-3 was therefore unpassable at production resolution:
+# --smoke set require_cfd_convergence=False and completed, while a real run --
+# which leaves it True -- marked every candidate CFD_failed before the adjoint
+# ever ran.
+#
+# 5e-3 is not "loose enough to pass". It is above the measured plateau and far
+# below a diverging solve, and the mesh study showed the AVERAGED drag at these
+# residuals agreeing to +/-1.1% across a 19x cell range -- i.e. the plateau is
+# not corrupting the force, the unsteadiness is, and force_oscillation is what
+# reports that. Tighten it once the case is steady.
+CONVERGENCE_RESIDUAL: float = 5e-3
+
 
 @dataclass(frozen=True)
 class CFDHealthReport:
@@ -248,7 +269,7 @@ def run_half_car_cfd(
             RuntimeWarning, stacklevel=2,
         )
     health = CFDHealthReport(
-        converged=residual_final <= 1e-3,
+        converged=residual_final <= CONVERGENCE_RESIDUAL,
         residual_final=residual_final,
         negative_volume_cells=negative_volume_cells,
         y_plus_min=float(result["y_plus_min"]),

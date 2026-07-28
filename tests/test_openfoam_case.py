@@ -317,6 +317,23 @@ def test_force_oscillation_fraction_reports_what_residuals_cannot():
     assert oc.force_oscillation_fraction(steady) < 1e-9
 
 
+def test_convergence_threshold_is_reachable_at_production_resolution():
+    """The gate must be passable by the resolution production actually uses.
+
+    Measured p-residual plateaus on one fixed STL: coarse 4.4e-4, medium
+    (production) 2.1e-3, medium+underbody 3.2e-3. The old hardcoded 1e-3 was
+    unpassable at medium, so --smoke (require_cfd_convergence=False) completed
+    while a real run marked every candidate CFD_failed before the adjoint ran.
+    """
+    import cfd_wrapper as cw
+    assert cw.CONVERGENCE_RESIDUAL > 3.2e-3, (
+        f"threshold {cw.CONVERGENCE_RESIDUAL} sits below the measured "
+        f"production plateau of 3.2e-3; no candidate could ever be scored")
+    assert cw.CONVERGENCE_RESIDUAL < 5e-2, (
+        f"threshold {cw.CONVERGENCE_RESIDUAL} is loose enough to accept a "
+        f"solve that never converged at all")
+
+
 def test_force_oscillation_warns_but_does_not_gate_convergence():
     """The oscillation check must NOT be folded into `converged`.
 
@@ -331,9 +348,14 @@ def test_force_oscillation_warns_but_does_not_gate_convergence():
     assert cw.MAX_FORCE_OSCILLATION < 0.18, (
         "threshold must flag the 18-27% oscillation measured on the brick")
     src = inspect.getsource(cw.run_half_car_cfd)
-    assert "converged=residual_final <= 1e-3," in src, (
+    conv = [ln for ln in src.splitlines() if "converged=" in ln]
+    assert conv, "no converged= assignment found"
+    assert all("force_oscillation" not in ln and "force_steady" not in ln
+               for ln in conv), (
         "converged must stay residual-only; folding the force-oscillation "
         "check into it fails every candidate in a production sweep")
+    assert any("residual_final" in ln for ln in conv), (
+        "converged must still be based on the residual")
     assert "force_oscillation=force_oscillation" in src, (
         "the oscillation must still be reported on the health report")
 
