@@ -192,6 +192,32 @@ def test_invoke_adjoint_actually_passes_max_unmapped_fraction():
         "value would be silently ignored")
     assert "max_point_match_distance_m" in args
 
+def test_wrapper_defaults_match_the_config():
+    """cfd_wrapper.run_half_car_adjoint restates every AdjointRunConfig default.
+
+    Two sources of truth, nothing keeping them in step. Exactly one drifted:
+    max_unmapped_fraction stayed 0.05 in the wrapper when the config moved to
+    0.30, so the production adjoint still died at "20.8% ... above the 5% limit"
+    while the config said 30%. The fix was a None sentinel; this test is what
+    catches the NEXT one, for every shared parameter rather than that one.
+    """
+    import inspect
+    import cfd_wrapper as cw
+
+    sig = inspect.signature(cw.run_half_car_adjoint)
+    drift = []
+    for name, p in sig.parameters.items():
+        if p.default is inspect.Parameter.empty or p.default is None:
+            continue          # None = "defer to the config", which is the fix
+        cfg = getattr(AdjointRunConfig, name, None)
+        if cfg is not None and cfg != p.default:
+            drift.append(f"{name}: wrapper={p.default!r} config={cfg!r}")
+    assert not drift, (
+        "wrapper defaults have drifted from AdjointRunConfig:\n  "
+        + "\n  ".join(drift)
+        + "\nUse None to defer to the config rather than restating its value.")
+
+
 def test_production_adjoint_defaults_are_reachable_on_this_geometry():
     """The default must be passable by the path that uses the defaults.
 

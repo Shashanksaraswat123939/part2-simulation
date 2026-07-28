@@ -291,7 +291,17 @@ def run_half_car_adjoint(
     keep_run_dir: bool = False,
     stage_timeout_s: int = 14400,
     underbody_refinement_level: int = 1,
-    max_unmapped_fraction: float = 0.05,
+    # None means "whatever AdjointRunConfig says", rather than restating it.
+    #
+    # This signature duplicated every one of the config's defaults and exactly
+    # one drifted: max_unmapped_fraction stayed 0.05 here when the config moved
+    # to 0.30, so the production adjoint still died at "20.8% ... above the 5%
+    # limit" while the config said 30%. A duplicated default is a second source
+    # of truth that nothing keeps in step. openfoam_adjoint is imported inside
+    # the function body, so the signature cannot name the config directly --
+    # hence the sentinel. test_wrapper_defaults_match_the_config compares all of
+    # them so the next drift fails a test instead of a run.
+    max_unmapped_fraction: Optional[float] = None,
 ) -> np.ndarray:
     """Drag-adjoint surface sensitivity for a half-car STL. This is what
     Part 3's `pipeline_interface.real_bindings.run_adjoint` needs and what
@@ -344,7 +354,10 @@ def run_half_car_adjoint(
         keep_run_dir=keep_run_dir,
         stage_timeout_s=stage_timeout_s,
         underbody_refinement_level=underbody_refinement_level,
-        max_unmapped_fraction=max_unmapped_fraction,
+        # Omit when None so the dataclass supplies its own default -- one source
+        # of truth for this value.
+        **({} if max_unmapped_fraction is None
+           else {"max_unmapped_fraction": max_unmapped_fraction}),
     )
     case_dir = Path(__file__).resolve().parent / "cfd_case_template"
 
