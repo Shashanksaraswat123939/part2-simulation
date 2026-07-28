@@ -8,7 +8,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from race_objective import BuildSettings, build_smooth_sheet_model, race_value_and_grad
+from race_objective import (BuildSettings, PARAM_NAMES, build_smooth_sheet_model,
+                            race_value_and_grad)
 from race_objective_adapter import adapt_gradients, race_value_and_grad_guarded
 
 
@@ -77,6 +78,66 @@ def test_objective_physics_is_unchanged_by_edits():
     # so only the mapping count exposed it. Kept as a cheap sanity anchor.
     T2, _ = race_value_and_grad(p, model)
     assert T == T2, f"objective is not deterministic: {T} != {T2}"
+
+
+def test_com_height_clamps_instead_of_killing_a_working_optimiser():
+    """dT/dh_com is negative, so the optimiser lowers the COM toward the fitted
+    range's floor. Raising there meant the better it worked, the sooner it
+    killed its own candidate -- ~320 iterations from the measured 29.2 mm start
+    against an 18 mm floor.
+    """
+    import warnings as _w
+    from race_objective_adapter import COM_HEIGHT_FIT_RANGE_M, _COM_CLAMP_WARNED
+
+    model, params = _model_and_params()
+    lo, _hi = COM_HEIGHT_FIT_RANGE_M
+    params = np.asarray(params, dtype=np.float64).copy()
+    params[PARAM_NAMES.index("com_height_m")] = lo - 0.002   # 2 mm below the floor
+
+    _COM_CLAMP_WARNED.clear()
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        T_raw, T_pen, grads = race_value_and_grad_guarded(params, model)
+    assert any("clamping" in str(c.message) for c in caught), (
+        "clamping must be announced, not silent")
+    assert T_raw > 0 and T_pen > 0, "clamped call must still return a race time"
+    # Flat beyond the data: two points below the floor must agree.
+    p2 = params.copy()
+    p2[PARAM_NAMES.index("com_height_m")] = lo - 0.004
+    T2_raw, T2_pen, _ = race_value_and_grad_guarded(p2, model)
+    assert abs(T_pen - T2_pen) < 1e-12, (
+        f"penalty is not flat below the fitted range: {T_pen} vs {T2_pen}")
+
+
+def test_com_height_far_outside_is_still_a_units_bug():
+    """Clamping must not swallow a genuine units/origin error."""
+    from race_objective_adapter import COM_HEIGHT_FIT_RANGE_M
+    model, params = _model_and_params()
+    lo, hi = COM_HEIGHT_FIT_RANGE_M
+    params = np.asarray(params, dtype=np.float64).copy()
+    params[PARAM_NAMES.index("com_height_m")] = hi + 2.0 * (hi - lo)
+    try:
+        race_value_and_grad_guarded(params, model)
+    except ValueError as exc:
+        assert "units or origin bug" in str(exc)
+        return
+    raise AssertionError("a far-outside COM height was silently clamped")
+
+
+def test_clamping_does_not_disable_the_com_x_guard():
+    """Regression: an early return on the clamp path skipped the com_x check."""
+    from race_objective_adapter import COM_HEIGHT_FIT_RANGE_M
+    model, params = _model_and_params()
+    lo, _hi = COM_HEIGHT_FIT_RANGE_M
+    params = np.asarray(params, dtype=np.float64).copy()
+    params[PARAM_NAMES.index("com_height_m")] = lo - 0.002    # triggers clamping
+    params[PARAM_NAMES.index("com_x_m")] = 999.0              # absurd
+    try:
+        race_value_and_grad_guarded(params, model)
+    except ValueError as exc:
+        assert "com_x_m" in str(exc), f"wrong guard fired: {exc}"
+        return
+    raise AssertionError("com_x sanity guard was skipped on the clamp path")
 
 
 def test_value_and_grad_transform_is_built_once():
@@ -255,16 +316,36 @@ def test_negative_drag_rejected():
 
 
 
-def test_com_height_out_of_range_rejected():
-    """COM height outside the fitted polynomial range must be rejected."""
+def test_com_height_out_of_fitted_range_is_clamped_not_rejected():
+    """Superseded 2026-07-28: outside the FITTED range now clamps.
+
+    This used to assert that 50 mm raises. It does not any more, and that is
+    deliberate: dT/dh_com is negative, so a working optimiser walks the COM
+    toward the fitted range's 18 mm floor and out of it -- raising there meant
+    the better the optimiser worked, the sooner it killed its own candidate.
+    50 mm is a legal COM height on a 65 mm car, so it is clamped to the fitted
+    ceiling and the penalty goes flat. What still raises is a PHYSICALLY
+    impossible height (see the next test).
+    """
     model, _ = _model_and_params()
-    # 0.050 is outside the [0.018, 0.042] range
-    params = np.array([12.0, 0.050, 0.02, 1e-7, 1.0, 0.050, 0.5, 0.005], dtype=np.float64)
-    try:
-        race_value_and_grad_guarded(params, model)
-    except ValueError:
-        return
-    raise AssertionError("Expected ValueError for out-of-range com_height_m")
+    params = np.array([12.0, 0.050, 0.02, 1e-7, 1.0, 0.050, 0.5, 0.005],
+                      dtype=np.float64)
+    T_raw, T_pen, _ = race_value_and_grad_guarded(params, model)
+    assert T_raw > 0 and T_pen > 0, "a clamped call must still produce a time"
+
+
+def test_com_height_outside_the_car_is_still_rejected():
+    """A COM above the 65 mm car or below the track is a units/origin bug."""
+    model, _ = _model_and_params()
+    for bad in (0.50, -0.01):     # 500 mm up, and below the track
+        params = np.array([12.0, 0.050, 0.02, 1e-7, 1.0, bad, 0.5, 0.005],
+                          dtype=np.float64)
+        try:
+            race_value_and_grad_guarded(params, model)
+        except ValueError as exc:
+            assert "units or origin bug" in str(exc), f"wrong guard: {exc}"
+            continue
+        raise AssertionError(f"com_height_m={bad} was accepted")
 
 
 def test_com_height_at_boundary_accepted():

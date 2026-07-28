@@ -15,6 +15,10 @@ subtracting the COM penalty component, exposing both values per the spec.
 
 from __future__ import annotations
 
+import warnings
+
+import numpy as np
+
 from mass_com_ingest import COM_SANITY_BOUNDS_M
 from race_objective import (
     PARAM_NAMES,
@@ -58,11 +62,26 @@ def _assert_time_coefficient_unity(param_vector) -> None:
     )
 
 
-def _assert_physical_inputs(param_vector) -> None:
+# T3.5 caps the car at 65 mm tall, so a real COM height is strictly inside
+# (0, 0.065) m. Outside that is a units or origin bug; inside it but outside the
+# penalty's fitted range is the optimiser doing its job and gets clamped.
+COM_HEIGHT_PHYSICAL_MAX_M: float = 0.065
+
+# Warn once per process when the COM height is clamped; a long sweep would
+# otherwise emit it every iteration.
+_COM_CLAMP_WARNED: set = set()
+
+
+def _assert_physical_inputs(param_vector):
     """Guard against physically meaningless inputs that would produce
     silently wrong results (e.g. negative mass, negative mu). The locked
     race_objective.py uses smooth_positive to avoid crashes, but this
-    masks garbage inputs. This guard catches them early with a clear error."""
+    masks garbage inputs. This guard catches them early with a clear error.
+
+    Returns the param vector, which may have com_height_m CLAMPED into the COM
+    penalty's fitted range -- see the comment at that check. Callers must use
+    the return value.
+    """
     p = {name: float(param_vector[i]) for i, name in enumerate(PARAM_NAMES)}
     if p["car_weight_kg"] <= 0:
         raise ValueError(f"car_weight_kg must be positive, got {p['car_weight_kg']}")
@@ -78,18 +97,61 @@ def _assert_physical_inputs(param_vector) -> None:
     # produces meaningless values (up to 10^14 seconds penalty).
     _tol = 1e-9  # small float tolerance for boundary comparisons
     if not (COM_HEIGHT_FIT_RANGE_M[0] - _tol <= p["com_height_m"] <= COM_HEIGHT_FIT_RANGE_M[1] + _tol):
-        raise ValueError(
-            f"com_height_m={p['com_height_m']} is outside the COM penalty "
-            f"polynomial's fitted range {COM_HEIGHT_FIT_RANGE_M} -- "
-            f"extrapolation would produce a meaningless penalty value. "
-            f"Check upstream mass/COM ingestion for a units or origin bug."
-        )
+        # A SLIGHT excursion is the optimiser doing its job, not a units bug.
+        #
+        # dT/dh_com is negative, so a working optimiser lowers the COM -- toward
+        # this very floor. Raising on that meant the better the optimiser
+        # worked, the sooner it killed its own candidate. Measured 2026-07-28:
+        # car com_z 29.2 mm against an 18 mm floor, ~11 mm of headroom at
+        # ~0.035 mm per iteration, so roughly 320 iterations before a long sweep
+        # would have hit it. Short runs never could.
+        #
+        # The polynomial is fitted on PLACEHOLDER data (race_objective.py, "the
+        # com_height penalty data points") and does explode outside its range,
+        # so extrapolating is not an option either. Clamping is the honest third
+        # answer: outside the data we stop claiming any further benefit, the
+        # penalty goes flat, and its gradient goes to zero. The optimiser may
+        # still lower the COM -- it just earns nothing more for doing so.
+        #
+        # A PHYSICALLY IMPOSSIBLE value is still a units or origin bug and still
+        # raises. The bound is the car itself, not an arbitrary multiple of the
+        # fitted range: T3.5 caps the car at 65 mm tall, so its centre of mass
+        # lies strictly between the track and 65 mm. Anything outside that is
+        # metres-for-millimetres or a wrong origin, not an optimiser excursion.
+        lo, hi = COM_HEIGHT_FIT_RANGE_M
+        if not (0.0 < p["com_height_m"] < COM_HEIGHT_PHYSICAL_MAX_M):
+            raise ValueError(
+                f"com_height_m={p['com_height_m']} is outside the physically "
+                f"possible range (0, {COM_HEIGHT_PHYSICAL_MAX_M}) m for a car "
+                f"capped at {COM_HEIGHT_PHYSICAL_MAX_M*1000:.0f} mm tall by "
+                f"T3.5 -- a units or origin bug upstream in mass/COM ingestion, "
+                f"not an optimiser excursion."
+            )
+        clamped = min(max(p["com_height_m"], lo), hi)
+        if not _COM_CLAMP_WARNED:
+            _COM_CLAMP_WARNED.add(True)
+            warnings.warn(
+                f"com_height_m={p['com_height_m']*1000:.2f} mm is outside the COM "
+                f"penalty polynomial's fitted range "
+                f"[{lo*1000:.1f}, {hi*1000:.1f}] mm; clamping to "
+                f"{clamped*1000:.2f} mm. The penalty is flat beyond the data, so "
+                f"lowering the COM further earns no further credit. The fit rests "
+                f"on placeholder data -- extend it with real measurements before "
+                f"trusting COM-driven results out here.",
+                RuntimeWarning, stacklevel=3,
+            )
+        param_vector = np.asarray(param_vector, dtype=np.float64).copy()
+        param_vector[PARAM_NAMES.index("com_height_m")] = clamped
+        # NB: fall through, do NOT return here. An early return skipped the
+        # com_x sanity check below, so a clamped COM height would have disabled
+        # an unrelated units-bug guard.
     # COM x sanity bounds (COM should be within a reasonable range of the car)
     if not (COM_SANITY_BOUNDS_M[0] <= p["com_x_m"] <= COM_SANITY_BOUNDS_M[1]):
         raise ValueError(
             f"com_x_m={p['com_x_m']} outside sanity bounds {COM_SANITY_BOUNDS_M}, "
             f"likely a units or origin bug"
         )
+    return param_vector
 
 
 def adapt_gradients(raw_grads: dict) -> dict:
@@ -150,7 +212,7 @@ def race_value_and_grad_guarded(param_vector, model):
     """
     import jax.numpy as jnp
     _assert_time_coefficient_unity(param_vector)
-    _assert_physical_inputs(param_vector)
+    param_vector = _assert_physical_inputs(param_vector)
     T_penalized, raw_grads = race_value_and_grad(param_vector, model)
     params_jax = jnp.asarray(param_vector, dtype=jnp.float64)
 
