@@ -100,13 +100,22 @@ def _component_to_dict(component: ComponentMassCOM) -> dict:
     }
 
 
-def _mass_com_to_dict(report: FullCarMassCOM) -> dict:
+def _mass_com_to_dict(report) -> dict:
+    """Duck-typed on the four scalars.
+
+    Part 3's MassReport carries the same COM scalars but no per-component
+    breakdown, and it is what the inner loop actually holds at record-write
+    time. Requiring `.components` would mean the record could only be written
+    from a layer that does not exist there -- which is how the record ended up
+    carrying no mass at all.
+    """
     return {
         "total_mass_kg": report.total_mass_kg,
         "com_x_m": report.com_x_m,
         "com_y_m": report.com_y_m,
         "com_z_m": report.com_z_m,
-        "components": [_component_to_dict(component) for component in report.components],
+        "components": [_component_to_dict(c)
+                       for c in getattr(report, "components", ())],
     }
 
 

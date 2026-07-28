@@ -93,6 +93,35 @@ def test_merge_refuses_records_from_different_cars():
     assert "--stage1-in" in out, "refusal should name the fix"
 
 
+def test_record_carries_drag_and_mass_for_the_ranked_table():
+    """A ranking showing only T_raw cannot be judged.
+
+    The first real record produced empty D20 and mass columns, and those are
+    exactly what tells you WHY one car beat another -- lighter is a different
+    story from slipperier. The inner loop holds both at write time; the record
+    just never asked. Duck-typed shapes, matching what Part 3 actually has.
+    """
+    from types import SimpleNamespace
+
+    cfd = SimpleNamespace(D20=0.7076, L=-0.02, Cm=0.005, A=0.0075)
+    mass = SimpleNamespace(total_mass_kg=0.1586, com_x_m=0.10,
+                           com_y_m=0.0, com_z_m=0.0292)   # no .components
+    rec = CandidateRecord(
+        candidate_id="c1", W_mm=120.0, x_front_mm=42.9, d_halo_mm=16.0,
+        lifecycle_state="geometry_repaired", T_raw=3.0095, T_penalized=3.0096,
+        cfd_force_report=cfd, mass_report=mass, com_report=mass)
+    with tempfile.TemporaryDirectory() as td:
+        p = write_candidate_record(rec, td)
+        back = read_candidate_record(p)
+        assert abs(back.cfd_force_report.D20 - 0.7076) < 1e-12
+        assert abs(back.mass_report.total_mass_kg - 0.1586) < 1e-12
+        r = subprocess.run([sys.executable, str(_ROOT / "merge_results.py"), td],
+                           capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "0.70760" in r.stdout, f"D20 missing from the table:\n{r.stdout}"
+    assert "158.60" in r.stdout, f"mass missing from the table:\n{r.stdout}"
+
+
 def test_merge_reports_unscored_candidates_rather_than_dropping_them():
     with tempfile.TemporaryDirectory() as td:
         write_candidate_record(_summary_record("ok", 16.0, 3.25), td)
@@ -110,6 +139,7 @@ def test_merge_reports_unscored_candidates_rather_than_dropping_them():
 
 if __name__ == "__main__":
     for t in (test_summary_record_round_trips,
+              test_record_carries_drag_and_mass_for_the_ranked_table,
               test_merge_ranks_by_race_time,
               test_merge_refuses_records_from_different_cars,
               test_merge_reports_unscored_candidates_rather_than_dropping_them):
