@@ -761,21 +761,97 @@ def _last_data_row(dat_text: str) -> list[str]:
     return last.replace("(", " ").replace(")", " ").split()
 
 
-def parse_total_vector_dat(dat_text: str) -> tuple[float, float, float]:
+# Fraction of the force history averaged to produce the reported force, and
+# over which the oscillation is measured. 20% of a 1000-iteration solve is 200
+# samples — long enough to average several shedding periods, short enough to
+# exclude the initial transient.
+FORCE_AVERAGE_FRACTION: float = 0.2
+
+
+def _force_history(dat_text: str) -> list[list[float]]:
+    """All parsable data rows of a force/moment .dat as flat float lists."""
+    rows: list[list[float]] = []
+    for line in dat_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.replace("(", " ").replace(")", " ").split()
+        try:
+            rows.append([float(p) for p in parts])
+        except ValueError:
+            continue
+    return rows
+
+
+def parse_total_vector_dat(
+    dat_text: str, average_fraction: float = FORCE_AVERAGE_FRACTION
+) -> tuple[float, float, float]:
     """Parse the *total* 3-vector from an ESI v2206+ `force.dat` or `moment.dat`.
 
     Layout (after stripping parentheses):
         time  (total_x total_y total_z) (pressure_x..) (viscous_x..)
     The total already includes pressure + viscous (+ porous), so we take the
     first vector directly — no summation, which avoids the version-dependent
-    ambiguity of the older combined `forces.dat` column order. Returns the last
-    time-step's (x, y, z).
+    ambiguity of the older combined `forces.dat` column order.
+
+    Returns the MEAN over the last `average_fraction` of the history, not the
+    final row.
+
+    WHY (measured 2026-07-27). This car is a brick, and a brick at Re 3.15e5
+    sheds vortices. simpleFoam is a STEADY solver, so it cannot converge on a
+    genuinely unsteady wake: the force history oscillates and never settles.
+    Measured across four real solves, the drag over the last 20% of iterations
+    had a peak-to-peak spread of 18.1%, 20.2%, 22.1% and 26.9% of its own mean,
+    still drifting 2-4% per decade of iterations.
+
+    Reading the final row therefore sampled that oscillation at an arbitrary
+    phase. Two geometries differing by 65 NANOMETRES (418 of 360,000 vertices
+    snapped onto the symmetry plane) reported drag 7.7% apart — not a physical
+    difference, just two different points on the same oscillation. That noise
+    is larger than the 5.43% drag reduction the first working adjoint step
+    produced, which is why that step must not be read as a measured improvement.
+
+    Averaging does not make the solve steady; it makes the reported number
+    reproducible. `force_oscillation_fraction` reports what averaging is hiding,
+    and the caller decides whether the spread is tolerable.
     """
-    cols = _last_data_row(dat_text)
-    nums = [float(c) for c in cols[1:]]  # drop the time column
-    if len(nums) < 3:
-        raise ValueError(f"Unexpected .dat width: {len(nums)} numeric columns")
-    return nums[0], nums[1], nums[2]
+    rows = _force_history(dat_text)
+    if not rows:
+        raise ValueError("force/moment .dat contained no parsable data rows")
+    width = max(len(r) for r in rows)
+    rows = [r for r in rows if len(r) == width]
+    if width < 4:
+        raise ValueError(f"Unexpected .dat width: {width} columns")
+    if not 0.0 < average_fraction <= 1.0:
+        raise ValueError("average_fraction must be in (0, 1]")
+    k = max(int(len(rows) * average_fraction), 1)
+    tail = rows[-k:]
+    return tuple(sum(r[i] for r in tail) / len(tail) for i in (1, 2, 3))
+
+
+def force_oscillation_fraction(
+    dat_text: str, average_fraction: float = FORCE_AVERAGE_FRACTION
+) -> float:
+    """Peak-to-peak swing of the streamwise force over the averaging window,
+    as a fraction of its mean. 0.0 means a fully settled solve.
+
+    This is the number `residual_final` cannot express. A steady solver on an
+    unsteady wake plateaus its residuals while the forces keep swinging, so
+    residual convergence says nothing about whether the reported force is
+    reproducible. Measured 18-27% here; a trustworthy drag delta needs this
+    well below the delta being claimed.
+    """
+    rows = _force_history(dat_text)
+    if not rows:
+        raise ValueError("force/moment .dat contained no parsable data rows")
+    width = max(len(r) for r in rows)
+    rows = [r for r in rows if len(r) == width]
+    k = max(int(len(rows) * average_fraction), 1)
+    fx = [r[1] for r in rows[-k:]]
+    mean = sum(fx) / len(fx)
+    if mean == 0.0:
+        return float("inf")
+    return (max(fx) - min(fx)) / abs(mean)
 
 
 # ---------------------------------------------------------------------------
@@ -1022,6 +1098,23 @@ def _find_latest(root: Path, names: tuple[str, ...]) -> Optional[Path]:
     return None
 
 
+def read_force_oscillation(run_dir: str) -> Optional[float]:
+    """Streamwise-force peak-to-peak over the averaging window, as a fraction
+    of its mean. None if no force history is available."""
+    root = Path(run_dir) / "postProcessing" / "forces"
+    if not root.is_dir():
+        return None
+    force_f = _find_latest(root, ("force.dat",)) or _find_latest(root, ("forces.dat",))
+    if force_f is None:
+        return None
+    try:
+        return force_oscillation_fraction(
+            force_f.read_text(encoding="utf-8", errors="replace")
+        )
+    except ValueError:
+        return None
+
+
 def read_force_and_moment(run_dir: str) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Return ((Fx,Fy,Fz), (Mx,My,Mz)) from postProcessing/forces.
 
@@ -1038,6 +1131,9 @@ def read_force_and_moment(run_dir: str) -> tuple[tuple[float, float, float], tup
         f = parse_total_vector_dat(force_f.read_text(encoding="utf-8", errors="replace"))
         m = parse_total_vector_dat(moment_f.read_text(encoding="utf-8", errors="replace"))
         return f, m
+    # NB: the combined-forces.dat fallback below still reads a single row. It is
+    # a legacy path for builds that do not write force.dat/moment.dat; if it
+    # ever becomes the live path, give it the same averaging treatment.
     combined = _find_latest(root, ("forces.dat",))
     if combined is None:
         raise FileNotFoundError("No force.dat/moment.dat/forces.dat found under postProcessing/forces")
@@ -1098,6 +1194,7 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
         residual = parse_final_p_residual(logs["solver_log"])
         courant = parse_max_courant(logs["solver_log"])
         (fx, _fy, fz), (_mx, my, _mz) = read_force_and_moment(run_dir)
+        force_osc = read_force_oscillation(run_dir)
         try:
             yp_min, yp_max = parse_yplus_range(_read_yplus(run_dir, logs["solver_log"]))
         except ValueError:
@@ -1108,6 +1205,7 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
             "A_half": meta["frontal_area_half"],
             "pitching_moment_half": my,
             "residual_final": residual,
+            "force_oscillation": force_osc,
             "negative_volume_cells": neg,
             "y_plus_min": yp_min,
             "y_plus_max": yp_max,

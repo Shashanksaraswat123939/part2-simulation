@@ -279,6 +279,51 @@ def test_parse_total_vector_dat():
     assert (abs(fx - 12.5) < 1e-9 and abs(fy - 0.1) < 1e-9 and abs(fz + 3.0) < 1e-9)
 
 
+def _oscillating_force_dat(n=1000, mean=0.35, amp=0.04):
+    """A force history like the real ones: settled residuals, swinging force."""
+    import math
+    rows = ["# Forces", "# Time forces"]
+    for i in range(1, n + 1):
+        fx = mean + amp * math.sin(i * 0.37)
+        rows.append(f"{i} ({fx} 0.0 -0.05) ({fx*0.8} 0 -0.04) ({fx*0.2} 0 -0.01)")
+    return "\n".join(rows) + "\n"
+
+
+def test_parse_total_vector_dat_averages_the_tail_not_the_last_sample():
+    """Reading the final row samples an oscillation at an arbitrary phase.
+
+    Measured 2026-07-27: real solves swing 18-27% peak-to-peak over the last
+    20% of iterations, so two geometries 65 NANOMETRES apart reported drag 7.7%
+    apart. Averaging makes the reported number reproducible.
+    """
+    dat = _oscillating_force_dat()
+    fx, _fy, _fz = oc.parse_total_vector_dat(dat)
+    # The mean of the window must be far closer to the true mean than the last
+    # sample is, which is the whole point.
+    last = float(dat.strip().splitlines()[-1].replace("(", " ").replace(")", " ").split()[1])
+    assert abs(fx - 0.35) < abs(last - 0.35), (
+        f"averaged {fx} is no closer to the true mean than the last sample {last}")
+    assert abs(fx - 0.35) < 0.01, f"averaged force {fx} should sit near the mean 0.35"
+
+
+def test_force_oscillation_fraction_reports_what_residuals_cannot():
+    dat = _oscillating_force_dat(mean=0.35, amp=0.04)
+    osc = oc.force_oscillation_fraction(dat)
+    # amplitude 0.04 about a mean of 0.35 -> peak-to-peak ~0.08 -> ~23%
+    assert 0.15 < osc < 0.30, f"expected ~23% peak-to-peak, got {osc}"
+
+    steady = "# Time forces\n" + "\n".join(
+        f"{i} (0.35 0.0 -0.05) (0.28 0 -0.04) (0.07 0 -0.01)" for i in range(1, 501))
+    assert oc.force_oscillation_fraction(steady) < 1e-9
+
+
+def test_oscillating_force_is_not_reported_as_converged():
+    """A settled residual over a swinging force is not a usable measurement."""
+    import cfd_wrapper as cw
+    assert cw.MAX_FORCE_OSCILLATION < 0.18, (
+        "threshold must reject the 18-27% oscillation measured on the brick")
+
+
 def test_read_force_and_moment_from_postprocessing():
     with tempfile.TemporaryDirectory() as d:
         fdir = Path(d) / "postProcessing" / "forces" / "0"

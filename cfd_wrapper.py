@@ -17,6 +17,18 @@ from physics_contract import (
     HalfCarQuantities,
 )
 
+# Largest streamwise-force peak-to-peak swing (as a fraction of its mean, over
+# the averaged window) for which the reported drag counts as reproducible.
+#
+# 5% is chosen against what the number is FOR: ranking candidates whose race
+# times differ by milliseconds. A drag figure that moves 20% between two
+# geometries 65 nanometres apart cannot rank anything. Measured on the current
+# brick: 0.18-0.27, i.e. every solve so far fails this — which is the correct
+# verdict, not a threshold to loosen. simpleFoam is a steady solver and the
+# brick's wake is not steady; the routes out are a less bluff shape, a longer
+# averaging window, or an unsteady solver.
+MAX_FORCE_OSCILLATION: float = 0.05
+
 
 @dataclass(frozen=True)
 class CFDHealthReport:
@@ -37,6 +49,14 @@ class CFDHealthReport:
     y_plus_min: float
     y_plus_max: float
     courant_max: Optional[float] = None
+    # Peak-to-peak swing of streamwise force over the averaged window, as a
+    # fraction of its mean. residual_final CANNOT express this: a steady solver
+    # on an unsteady wake plateaus its residuals while the forces keep swinging.
+    # Measured 0.18-0.27 on this brick geometry, i.e. the reported drag was
+    # reproducible only to ~+/-20%, which is wider than any single optimiser
+    # step. None when no force history was available -- None rather than NaN so
+    # two identical reports compare equal (NaN != NaN breaks dataclass equality).
+    force_oscillation: Optional[float] = None
 
 
 class CFDRunError(Exception):
@@ -199,13 +219,26 @@ def run_half_car_cfd(
         pitching_moment_half=float(result["pitching_moment_half"]),
     )
     residual_final = float(result["residual_final"])
+    raw_osc = result.get("force_oscillation")
+    force_oscillation = (
+        None if raw_osc is None or raw_osc != raw_osc else float(raw_osc)
+    )
+    # Converged means "the reported force is reproducible", which takes BOTH a
+    # settled residual and a settled force. Residual alone said `converged=True`
+    # on solves whose drag was swinging 18-27% peak-to-peak, so every drag delta
+    # the optimiser saw was inside its own measurement noise. An unknown
+    # oscillation is not held against the run — that is a missing measurement,
+    # not evidence of unsteadiness.
+    force_steady = (force_oscillation is None
+                    or force_oscillation <= MAX_FORCE_OSCILLATION)
     health = CFDHealthReport(
-        converged=residual_final <= 1e-3,
+        converged=residual_final <= 1e-3 and force_steady,
         residual_final=residual_final,
         negative_volume_cells=negative_volume_cells,
         y_plus_min=float(result["y_plus_min"]),
         y_plus_max=float(result["y_plus_max"]),
         courant_max=None if result.get("courant_max") is None else float(result["courant_max"]),
+        force_oscillation=force_oscillation,
     )
     return half, health
 
