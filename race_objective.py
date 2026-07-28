@@ -436,24 +436,37 @@ def race_time_seconds(params: jnp.ndarray, model: SmoothSheetModel) -> jnp.ndarr
     return p["time_coefficient"] * (t_finish + low_speed_penalty + com_penalty + com_x_pen)
 
 
-# Built ONCE, at import. `jax.value_and_grad(f)` returns a NEW function object
-# every time it is called, and JAX keys its trace cache on function identity --
-# so constructing it inside race_value_and_grad meant a cache miss and a full
-# retrace on every single call.
+# Built once rather than per call. This is tidiness, NOT a fix -- and an earlier
+# version of this comment claimed otherwise, which was wrong.
 #
-# That was not merely slow, it was fatal. Each retrace leaks JIT code mappings,
-# measured 2026-07-27 at ~3,300 per Stage-1 evaluation against a default
-# vm.max_map_count of 65,530:
-#     5 evaluations -> 17,643 mappings   OK
-#    16 evaluations -> 52,573 mappings   OK
-#    32 evaluations -> over the ceiling  mmap fails
-# mmap then fails, LLVM reports "Cannot allocate memory", and the process
-# segfaults. Production Stage 1 runs 8 + 24 = 32 evaluations, so it died every
-# time at roughly evaluation 20 -- on a box with 16 GB free, which is why it
-# looked like anything but a mapping leak.
+# THE LEAK, for whoever meets it next. Every call to this function TRACES the
+# objective, and each trace leaks JIT code mappings: measured 2026-07-27 at
+# ~3,300 per Stage-1 evaluation against a default vm.max_map_count of 65,530
+# (5 evals -> 17,643 mappings, 16 -> 52,573, and production's 32 over the
+# ceiling). mmap then fails, LLVM reports "Cannot allocate memory", and the
+# process segfaults -- on a box with 16 GB free, which is why it read as
+# anything but a mapping leak. Stage 1 died at roughly evaluation 20 every time.
 #
-# Hoisting the transform lets JAX's cache work: the objective is traced once and
-# reused for every call thereafter.
+# WHY HOISTING DOES NOT FIX IT. `jax.value_and_grad` is not a caching transform;
+# only `jax.jit` is. value_and_grad re-traces on every call wherever it is
+# constructed. Measured: hoisted 999 ms/call, rebuilt-per-call 1017 ms/call --
+# no difference.
+#
+# WHAT ACTUALLY FIXES IT, if it ever matters:
+#     jax.jit(lambda pv: jax.value_and_grad(race_time_seconds)(pv, model))
+# with the model captured as a closure constant, so jnp.linspace's `num` stays
+# concrete (passing the model as an argument raises ConcretizationTypeError).
+# Measured 1040 ms -> 23.8 ms per call, a 44x speedup and no further traces.
+# NOT applied, deliberately: it is not bit-identical (value delta 7e-10 s,
+# worst gradient delta 4.5e-4), Stage 1 runs ONCE per sweep at ~8 minutes while
+# CFD costs 25 minutes per pair hundreds of times, and this objective is what
+# ranks candidates. Perturbing it to speed up a step that is not the bottleneck
+# is a bad trade.
+#
+# MITIGATION IN PLACE: vm.max_map_count raised to 1,048,576 on the VM and
+# persisted in /etc/sysctl.d/99-stem-maps.conf -- roughly 300 Stage-1
+# evaluations of headroom against the 32 production uses. Revisit if a run ever
+# needs materially more.
 _RACE_VALUE_AND_GRAD = jax.value_and_grad(race_time_seconds)
 
 

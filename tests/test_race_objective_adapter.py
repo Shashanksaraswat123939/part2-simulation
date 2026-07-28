@@ -140,23 +140,28 @@ def test_clamping_does_not_disable_the_com_x_guard():
     raise AssertionError("com_x sanity guard was skipped on the clamp path")
 
 
-def test_value_and_grad_transform_is_built_once():
-    """Regression guard for the mapping leak.
+def test_mapping_leak_is_documented_where_it_bites():
+    """The leak is MITIGATED (vm.max_map_count), not fixed in code.
 
-    `jax.value_and_grad(f)` returns a new function object per call and JAX keys
-    its trace cache on identity, so building it inside the function meant a full
-    retrace every call: ~3,300 leaked JIT mappings per Stage-1 evaluation
-    against a 65,530 ceiling, killing production Stage 1 at ~evaluation 20.
+    An earlier version of this test asserted that hoisting
+    jax.value_and_grad out of the call fixed it. That was wrong:
+    value_and_grad is not a caching transform, only jax.jit is, and hoisting
+    changed nothing (999 vs 1017 ms/call measured). Asserting a false invariant
+    is worse than asserting none -- it would have let someone "restore" the real
+    fix and think they had broken something.
+
+    What this pins instead is that the next person meets the explanation.
     """
     import inspect
     import race_objective as ro
 
-    assert hasattr(ro, "_RACE_VALUE_AND_GRAD"), (
-        "the value_and_grad transform must be built once at module level")
-    src = inspect.getsource(ro.race_value_and_grad)
-    assert "jax.value_and_grad(" not in src, (
-        "race_value_and_grad rebuilds the transform per call; that leaks JIT "
-        "mappings until the process dies")
+    src = inspect.getsource(ro)
+    head = src[:src.index("def race_value_and_grad(")]
+    for needed in ("max_map_count", "jax.jit", "not bit-identical"):
+        assert needed in head, (
+            f"the mapping-leak note lost its mention of {needed!r}; whoever "
+            f"hits the segfault next needs the measurement, the real fix, and "
+            f"why it was not applied")
 
 
 def test_cartridge_mass_is_not_double_counted():
