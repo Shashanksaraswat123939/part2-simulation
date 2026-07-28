@@ -198,20 +198,32 @@ def read_candidate_record(path: str) -> CandidateRecord:
         data = json.load(f)
     if data["lifecycle_state"] not in ALLOWED_LIFECYCLE_STATES:
         raise ValueError(f"invalid lifecycle_state: {data['lifecycle_state']}")
+    # Tolerant of SUMMARY records: the physics-heavy blocks are optional (the
+    # inner loop does not hold them), and older records predate x_front_mm and
+    # the stability fields. A reader that cannot read what the writer emits is
+    # worse than no reader -- and until the write path was fixed on 2026-07-28,
+    # nothing had ever exercised this round trip on a real record.
+    def _opt(key, fn):
+        v = data.get(key)
+        return None if v is None else fn(v)
+
     return CandidateRecord(
         candidate_id=data["candidate_id"],
         W_mm=data["W_mm"],
+        x_front_mm=data.get("x_front_mm", 0.0),
         d_halo_mm=data["d_halo_mm"],
-        phi_grid_snapshot_paths=data["phi_grid_snapshot_paths"],
-        stl_path=data["stl_path"],
-        mass_report=_mass_com_from_dict(data["mass_report"]),
-        com_report=_mass_com_from_dict(data["com_report"]),
-        cfd_force_report=FullCarQuantities(**data["cfd_force_report"]),
-        T_raw=data["T_raw"],
-        T_penalized=data["T_penalized"],
-        gradients=data["gradients"],
-        adjoint_sensitivity_field_path=data["adjoint_sensitivity_field_path"],
-        setup_logs=data["setup_logs"],
-        failure_reason=data["failure_reason"],
+        phi_grid_snapshot_paths=data.get("phi_grid_snapshot_paths") or {},
+        stl_path=data.get("stl_path") or "",
+        mass_report=_opt("mass_report", _mass_com_from_dict),
+        com_report=_opt("com_report", _mass_com_from_dict),
+        cfd_force_report=_opt("cfd_force_report", lambda d: FullCarQuantities(**d)),
+        T_raw=data.get("T_raw"),
+        T_penalized=data.get("T_penalized"),
+        gradients=data.get("gradients") or {},
+        adjoint_sensitivity_field_path=data.get("adjoint_sensitivity_field_path"),
+        setup_logs=data.get("setup_logs") or "",
+        failure_reason=data.get("failure_reason"),
         lifecycle_state=data["lifecycle_state"],
+        statically_stable=data.get("statically_stable"),
+        stability_notes=data.get("stability_notes") or "",
     )
