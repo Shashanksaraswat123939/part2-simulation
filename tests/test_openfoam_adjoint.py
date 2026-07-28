@@ -204,16 +204,28 @@ def test_wrapper_defaults_match_the_config():
     import inspect
     import cfd_wrapper as cw
 
-    sig = inspect.signature(cw.run_half_car_adjoint)
+    import dataclasses
+    import openfoam_case as oc
+
+    # Both wrappers, not just the one that broke: run_half_car_cfd restates
+    # nine OpenFOAMRunConfig defaults and run_half_car_adjoint eight more.
+    # They agree today; agreeing today is not staying in step.
+    pairs = [(cw.run_half_car_cfd, oc.OpenFOAMRunConfig),
+             (cw.run_half_car_adjoint, AdjointRunConfig)]
     drift = []
-    for name, p in sig.parameters.items():
-        if p.default is inspect.Parameter.empty or p.default is None:
-            continue          # None = "defer to the config", which is the fix
-        cfg = getattr(AdjointRunConfig, name, None)
-        if cfg is not None and cfg != p.default:
-            drift.append(f"{name}: wrapper={p.default!r} config={cfg!r}")
+    for fn, cfg_cls in pairs:
+        fields = {f.name: f for f in dataclasses.fields(cfg_cls)}
+        for name, p in inspect.signature(fn).parameters.items():
+            if p.default is inspect.Parameter.empty or p.default is None:
+                continue          # None = "defer to the config", which is the fix
+            f = fields.get(name)
+            if f is None or f.default is dataclasses.MISSING:
+                continue
+            if f.default != p.default:
+                drift.append(f"{fn.__name__}.{name}: wrapper={p.default!r} "
+                             f"{cfg_cls.__name__}={f.default!r}")
     assert not drift, (
-        "wrapper defaults have drifted from AdjointRunConfig:\n  "
+        "wrapper defaults have drifted from their config:\n  "
         + "\n  ".join(drift)
         + "\nUse None to defer to the config rather than restating its value.")
 
