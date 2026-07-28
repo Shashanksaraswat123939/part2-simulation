@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -40,21 +40,37 @@ class CandidateRecord:
     candidate_id: str
     W_mm: float
     d_halo_mm: float
-    phi_grid_snapshot_paths: dict
-    stl_path: str
-    mass_report: FullCarMassCOM
+    lifecycle_state: str
+    # x_front is a per-RUN scalar under the two-stage split: Stage 1 chooses it
+    # and Stage 2 freezes it. A record that does not say which x_front produced
+    # it cannot be merged with records from another machine, which is the whole
+    # point of sharding the d_halo sweep. It was absent, and the inner loop
+    # passed it anyway -- so every CandidateRecord(**payload) raised TypeError
+    # and _try_write_record swallowed it. No record has ever been written.
+    x_front_mm: float = 0.0
+    phi_grid_snapshot_paths: dict = field(default_factory=dict)
+    # Everything below is optional so a SUMMARY record (what the inner loop can
+    # supply: identity, lifecycle, times) is constructible. The full physics
+    # payload is written when the caller has it; the ranking that Stage 2 exists
+    # to do needs only T_raw plus the identifying scalars, and a record layer
+    # that can only represent complete records ends up representing none.
+    stl_path: str = ""
+    mass_report: Optional[FullCarMassCOM] = None
     # Source docs list mass report and COM report separately, but
     # physics_contract.FullCarMassCOM already bundles both. Store the same
     # object in both fields rather than inventing a redundant second type.
-    com_report: FullCarMassCOM
-    cfd_force_report: FullCarQuantities
-    T_raw: Optional[float]
-    T_penalized: Optional[float]
-    gradients: dict
-    adjoint_sensitivity_field_path: Optional[str]
-    setup_logs: str
-    failure_reason: Optional[str]
-    lifecycle_state: str
+    com_report: Optional[FullCarMassCOM] = None
+    cfd_force_report: Optional[FullCarQuantities] = None
+    T_raw: Optional[float] = None
+    T_penalized: Optional[float] = None
+    gradients: dict = field(default_factory=dict)
+    adjoint_sensitivity_field_path: Optional[str] = None
+    setup_logs: str = ""
+    failure_reason: Optional[str] = None
+    # Stability outcome, passed by inner_loop's `extra`. Real per-candidate
+    # results, so they belong in the record rather than being dropped.
+    statically_stable: Optional[bool] = None
+    stability_notes: str = ""
 
     def __post_init__(self):
         # Guard: prevent unbounded setup_logs from creating huge JSON files.
@@ -108,17 +124,23 @@ def _record_to_dict(record: CandidateRecord) -> dict:
     return {
         "candidate_id": record.candidate_id,
         "W_mm": record.W_mm,
+        "x_front_mm": record.x_front_mm,
         "d_halo_mm": record.d_halo_mm,
         "phi_grid_snapshot_paths": record.phi_grid_snapshot_paths,
         "stl_path": record.stl_path,
-        "mass_report": _mass_com_to_dict(record.mass_report),
-        "com_report": _mass_com_to_dict(record.com_report),
-        "cfd_force_report": {
+        # None for a summary record — see the field comments. Serialising null
+        # keeps the schema stable so a reader can tell "not captured" from
+        # "captured as zero".
+        "mass_report": (None if record.mass_report is None
+                        else _mass_com_to_dict(record.mass_report)),
+        "com_report": (None if record.com_report is None
+                       else _mass_com_to_dict(record.com_report)),
+        "cfd_force_report": (None if record.cfd_force_report is None else {
             "D20": record.cfd_force_report.D20,
             "L": record.cfd_force_report.L,
             "Cm": record.cfd_force_report.Cm,
             "A": record.cfd_force_report.A,
-        },
+        }),
         "T_raw": record.T_raw,
         "T_penalized": record.T_penalized,
         "gradients": record.gradients,
@@ -126,6 +148,8 @@ def _record_to_dict(record: CandidateRecord) -> dict:
         "setup_logs": record.setup_logs,
         "failure_reason": record.failure_reason,
         "lifecycle_state": record.lifecycle_state,
+        "statically_stable": record.statically_stable,
+        "stability_notes": record.stability_notes,
     }
 
 

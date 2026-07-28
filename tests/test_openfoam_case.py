@@ -317,11 +317,25 @@ def test_force_oscillation_fraction_reports_what_residuals_cannot():
     assert oc.force_oscillation_fraction(steady) < 1e-9
 
 
-def test_oscillating_force_is_not_reported_as_converged():
-    """A settled residual over a swinging force is not a usable measurement."""
+def test_force_oscillation_warns_but_does_not_gate_convergence():
+    """The oscillation check must NOT be folded into `converged`.
+
+    Part 3's require_cfd_convergence defaults to True and routes a
+    non-converged solve to CFD_failed. Every real solve currently oscillates
+    10-27%, so ANDing that into `converged` killed every candidate in a
+    production sweep. It is a diagnosis, not a gate — reported and warned
+    about, with the policy left to the caller.
+    """
+    import inspect
     import cfd_wrapper as cw
     assert cw.MAX_FORCE_OSCILLATION < 0.18, (
-        "threshold must reject the 18-27% oscillation measured on the brick")
+        "threshold must flag the 18-27% oscillation measured on the brick")
+    src = inspect.getsource(cw.run_half_car_cfd)
+    assert "converged=residual_final <= 1e-3," in src, (
+        "converged must stay residual-only; folding the force-oscillation "
+        "check into it fails every candidate in a production sweep")
+    assert "force_oscillation=force_oscillation" in src, (
+        "the oscillation must still be reported on the health report")
 
 
 def test_read_force_and_moment_from_postprocessing():

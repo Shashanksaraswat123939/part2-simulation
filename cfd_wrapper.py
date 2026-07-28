@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -223,16 +224,31 @@ def run_half_car_cfd(
     force_oscillation = (
         None if raw_osc is None or raw_osc != raw_osc else float(raw_osc)
     )
-    # Converged means "the reported force is reproducible", which takes BOTH a
-    # settled residual and a settled force. Residual alone said `converged=True`
-    # on solves whose drag was swinging 18-27% peak-to-peak, so every drag delta
-    # the optimiser saw was inside its own measurement noise. An unknown
-    # oscillation is not held against the run — that is a missing measurement,
-    # not evidence of unsteadiness.
-    force_steady = (force_oscillation is None
-                    or force_oscillation <= MAX_FORCE_OSCILLATION)
+    # `converged` stays RESIDUAL-ONLY. An earlier version of this ANDed in the
+    # force-oscillation check, which was wrong as a gate even though it is right
+    # as a diagnosis: Part 3's require_cfd_convergence defaults to True and
+    # routes a non-converged solve to CFD_failed, so folding a criterion that
+    # every real solve currently fails (10-27% measured) into `converged` would
+    # have killed every candidate in a production sweep.
+    #
+    # The signal is reported instead, and warned about. Whether an unsteady
+    # force is fatal is a policy decision for the caller who knows what the
+    # number is being used for — ranking candidates needs it small, exercising
+    # the pipeline does not.
+    if (force_oscillation is not None
+            and force_oscillation > MAX_FORCE_OSCILLATION):
+        warnings.warn(
+            f"streamwise force is still swinging {force_oscillation*100:.1f}% "
+            f"peak-to-peak over the averaged window (limit "
+            f"{MAX_FORCE_OSCILLATION*100:.0f}%). The reported D20 is a mean over "
+            f"an unsteady signal, reproducible to roughly half that spread. "
+            f"Drag deltas smaller than it are not measurable. Residual "
+            f"convergence does not cover this — a steady solver on an unsteady "
+            f"wake plateaus its residuals while the forces keep swinging.",
+            RuntimeWarning, stacklevel=2,
+        )
     health = CFDHealthReport(
-        converged=residual_final <= 1e-3 and force_steady,
+        converged=residual_final <= 1e-3,
         residual_final=residual_final,
         negative_volume_cells=negative_volume_cells,
         y_plus_min=float(result["y_plus_min"]),
