@@ -436,9 +436,30 @@ def race_time_seconds(params: jnp.ndarray, model: SmoothSheetModel) -> jnp.ndarr
     return p["time_coefficient"] * (t_finish + low_speed_penalty + com_penalty + com_x_pen)
 
 
+# Built ONCE, at import. `jax.value_and_grad(f)` returns a NEW function object
+# every time it is called, and JAX keys its trace cache on function identity --
+# so constructing it inside race_value_and_grad meant a cache miss and a full
+# retrace on every single call.
+#
+# That was not merely slow, it was fatal. Each retrace leaks JIT code mappings,
+# measured 2026-07-27 at ~3,300 per Stage-1 evaluation against a default
+# vm.max_map_count of 65,530:
+#     5 evaluations -> 17,643 mappings   OK
+#    16 evaluations -> 52,573 mappings   OK
+#    32 evaluations -> over the ceiling  mmap fails
+# mmap then fails, LLVM reports "Cannot allocate memory", and the process
+# segfaults. Production Stage 1 runs 8 + 24 = 32 evaluations, so it died every
+# time at roughly evaluation 20 -- on a box with 16 GB free, which is why it
+# looked like anything but a mapping leak.
+#
+# Hoisting the transform lets JAX's cache work: the objective is traced once and
+# reused for every call thereafter.
+_RACE_VALUE_AND_GRAD = jax.value_and_grad(race_time_seconds)
+
+
 def race_value_and_grad(params: np.ndarray, model: SmoothSheetModel) -> tuple[float, dict[str, float]]:
     params_jax = jnp.asarray(params, dtype=jnp.float64)
-    value, grad_vec = jax.value_and_grad(race_time_seconds)(params_jax, model)
+    value, grad_vec = _RACE_VALUE_AND_GRAD(params_jax, model)
     return float(value), {name: float(grad_vec[i]) for i, name in enumerate(PARAM_NAMES)}
 
 

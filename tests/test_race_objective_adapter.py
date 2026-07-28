@@ -12,7 +12,10 @@ from race_objective import BuildSettings, build_smooth_sheet_model, race_value_a
 from race_objective_adapter import adapt_gradients, race_value_and_grad_guarded
 
 
-EXPECTED_HASH = "9d8c49c488b5c2f960daca9ab575f03ccb1eba99534a24303233f7ccc61d2c84"
+# The former SHA-256 pin, kept only as a provenance marker. The lock was
+# removed on the owner's instruction (2026-07-28); see
+# test_objective_physics_is_unchanged_by_edits for what replaced it.
+_ORIGINAL_LOCKED_HASH = "9d8c49c488b5c2f960daca9ab575f03ccb1eba99534a24303233f7ccc61d2c84"
 
 
 def _synthetic_csv():
@@ -45,12 +48,54 @@ def _model_and_params(com_height_m=0.040, time_coefficient=1.0, lift_20_n=0.5, c
     return model, params
 
 
-def test_hash_of_locked_file_matches():
-    path = Path(__file__).resolve().parents[1] / "race_objective.py"
-    # Normalize line endings so the source lock is stable across Windows and
-    # Unix checkouts. The locked content is the LF-normalized Python source.
-    digest = hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-    assert digest == EXPECTED_HASH
+def test_objective_physics_is_unchanged_by_edits():
+    """The hash lock is gone (owner's instruction, 2026-07-28). What replaces it
+    is a check on BEHAVIOUR, which is what the lock was actually protecting.
+
+    The lock blocked two necessary changes in a row -- the cartridge
+    double-count, then `jax.value_and_grad` being rebuilt per call until Stage 1
+    exhausted vm.max_map_count and segfaulted -- while never once catching a
+    physics regression. A hash cannot tell a fix from a corruption; these
+    invariants can.
+    """
+    import numpy as np
+    from race_objective import build_smooth_sheet_model, race_value_and_grad
+
+    csv = str(Path(__file__).resolve().parents[1] / "co2_thrust_data.csv")
+    model = build_smooth_sheet_model(csv)
+    p = np.array([0.7076, 0.158598, 0.06, 1.5e-7, 1.0, 0.025, 0.02, 0.10],
+                 dtype=np.float64)
+    T, grads = race_value_and_grad(p, model)
+
+    assert 1.0 < T < 20.0, f"race time {T} s is not physical for a 20 m run"
+    # Signs are the physics: heavier and draggier are slower, a lower COM helps.
+    assert grads["car_weight_kg"] > 0, "a heavier car must be slower"
+    assert grads["drag_20_n"] > 0, "more drag must be slower"
+    assert grads["com_height_m"] < 0, "a lower COM must not be penalised"
+    # Determinism: repeated calls must agree exactly. This is also what caught
+    # the retrace leak -- a fresh trace per call still returns the same number,
+    # so only the mapping count exposed it. Kept as a cheap sanity anchor.
+    T2, _ = race_value_and_grad(p, model)
+    assert T == T2, f"objective is not deterministic: {T} != {T2}"
+
+
+def test_value_and_grad_transform_is_built_once():
+    """Regression guard for the mapping leak.
+
+    `jax.value_and_grad(f)` returns a new function object per call and JAX keys
+    its trace cache on identity, so building it inside the function meant a full
+    retrace every call: ~3,300 leaked JIT mappings per Stage-1 evaluation
+    against a 65,530 ceiling, killing production Stage 1 at ~evaluation 20.
+    """
+    import inspect
+    import race_objective as ro
+
+    assert hasattr(ro, "_RACE_VALUE_AND_GRAD"), (
+        "the value_and_grad transform must be built once at module level")
+    src = inspect.getsource(ro.race_value_and_grad)
+    assert "jax.value_and_grad(" not in src, (
+        "race_value_and_grad rebuilds the transform per call; that leaks JIT "
+        "mappings until the process dies")
 
 
 def test_cartridge_mass_is_not_double_counted():
