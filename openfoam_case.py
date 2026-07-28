@@ -811,9 +811,30 @@ def parse_total_vector_dat(
     is larger than the 5.43% drag reduction the first working adjoint step
     produced, which is why that step must not be read as a measured improvement.
 
-    Averaging does not make the solve steady; it makes the reported number
-    reproducible. `force_oscillation_fraction` reports what averaging is hiding,
-    and the caller decides whether the spread is tolerable.
+    Averaging does not make the solve steady, and it is NOT SUFFICIENT on its
+    own. Measured on that same 65-nm-apart pair, sweeping the window:
+
+        final row   7.39% disagreement
+        last  5%    1.20%
+        last 10%    2.10%
+        last 20%    2.75%   <- FORCE_AVERAGE_FRACTION
+        last 40%    1.54%
+        last 60%    0.70%
+        last 80%    5.67%
+
+    So averaging cuts the noise from ~7.4% to ~1-3%, but never reliably reaches
+    the <1% that ranking candidates by race time needs, and the answer depends
+    on the window. That non-monotonicity is the diagnosis: the solve is still
+    DRIFTING (2-4% per decade of iterations), not oscillating about a converged
+    mean, so each window averages a different part of a moving signal. 20% is
+    kept because no window is defensibly better -- picking 60% because it scored
+    best on one pair would be fitting noise.
+
+    What would actually fix it: many more iterations so the transient is well
+    past and many shedding cycles are averaged; or a less bluff geometry; or an
+    unsteady solver with proper time-averaging. `force_oscillation_fraction`
+    reports what averaging is hiding, so the caller can see when the number is
+    not trustworthy rather than inferring it from a residual that cannot tell.
     """
     rows = _force_history(dat_text)
     if not rows:
