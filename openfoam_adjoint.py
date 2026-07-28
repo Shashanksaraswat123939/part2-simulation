@@ -100,7 +100,19 @@ class AdjointRunConfig:
     # rather than fatal -- see map_sensitivity_to_stl_vertices. Above this, the
     # CFD mesh is too coarse to represent the body and we stop rather than
     # optimise a surface that is mostly held still.
-    max_unmapped_fraction: float = 0.05
+    # 0.30, not 0.05. The measured share on this geometry at `medium` is 21.36%,
+    # essentially all of it STL over-resolution plus enclosed voids (median
+    # distance 0.652 mm). At 0.05 the PRODUCTION path could never complete an
+    # adjoint: --smoke overrode it to 0.25 and so passed, while a real run --
+    # which passes adjoint_kwargs={} -- would have failed every candidate. The
+    # guard that actually detects a bad mesh is max_median_match_distance_m.
+    max_unmapped_fraction: float = 0.30
+    # Median STL-vertex-to-adjoint-point distance above which the CFD mesh is
+    # judged not to represent the body at all. 3 mm against a measured healthy
+    # median of 0.652 mm -- loose enough not to fire on a coarser-but-usable
+    # mesh, tight enough that a mesh which has genuinely drifted or collapsed
+    # cannot pass.
+    max_median_match_distance_m: float = 3e-3
     # Divergence trap for the adjoint solve, as a multiple of the freestream.
     # See check_adjoint_magnitude: the residual check cannot detect steady
     # exponential growth, and a diverged adjoint yields a sensitivity field that
@@ -805,7 +817,8 @@ def map_sensitivity_to_stl_vertices(
     sens_points: np.ndarray,
     sens_values: np.ndarray,
     max_distance_m: float,
-    max_unmapped_fraction: float = 0.05,
+    max_unmapped_fraction: float = 0.30,
+    max_median_match_distance_m: float = 3e-3,
 ) -> np.ndarray:
     """Nearest-neighbour-map CFD-mesh sensitivity points onto the ORIGINAL
     STL's vertex order, so the result lines up 1:1 with
@@ -842,15 +855,40 @@ def map_sensitivity_to_stl_vertices(
     # iteration could ever complete. The fraction is the real signal: a few
     # percent is unresolved recesses, a large fraction means the mesh does not
     # cover the body at all (or units/geometry drifted), which still raises.
+    # THE MEDIAN is what detects "the CFD mesh does not cover the body". The
+    # unmapped FRACTION does not, because it conflates three different things:
+    #
+    #   (a) STL over-resolution -- 360,000 STL vertices against a far sparser
+    #       CFD surface, so a minority of vertices land in sparse patches. Benign.
+    #   (b) enclosed voids (halo cavity, cartridge bore) that snappyHexMesh
+    #       legitimately deletes. Freezing those is physically correct: no flow,
+    #       no drag sensitivity.
+    #   (c) the CFD mesh genuinely failing to represent the body. The real risk.
+    #
+    # Measured 2026-07-26/27 at `medium`: median distance 0.652 mm, unmapped at
+    # 5 mm 21.36%, unmapped at 20 mm 3.84%. The bulk is resolved to well under a
+    # millimetre while a fifth of vertices trip a 5 mm test -- so the fraction
+    # was reporting (a) and (b), and the 5% default made the PRODUCTION path
+    # unpassable on a geometry the smoke path handled only because it set 0.25.
+    # A median that blows up is (c) and nothing else.
+    med = float(np.median(dist))
+    if med > max_median_match_distance_m:
+        raise ValueError(
+            f"median STL-vertex-to-adjoint-point distance is {med*1000:.2f} mm "
+            f"(limit {max_median_match_distance_m*1000:.2f} mm). The CFD mesh "
+            f"does not represent this geometry -- the whole surface is poorly "
+            f"matched, not just recesses and enclosed voids. Raise `resolution`, "
+            f"or check that the STL and the meshed case have not drifted apart."
+        )
     if frac > max_unmapped_fraction:
         raise ValueError(
             f"{n_bad}/{len(stl_verts)} STL vertices ({frac*100:.1f}%) have no "
             f"adjoint sensitivity point within {max_distance_m} m, above the "
-            f"{max_unmapped_fraction*100:.0f}% limit. Either the CFD resolution "
-            "is too coarse to represent this geometry, or the STL and the meshed "
-            "case have drifted apart. Raise `resolution`, or raise "
-            "AdjointRunConfig.max_unmapped_fraction if you accept the surface "
-            "being partly frozen."
+            f"{max_unmapped_fraction*100:.0f}% limit (median distance "
+            f"{med*1000:.2f} mm). With a healthy median this is usually STL "
+            "over-resolution plus enclosed voids rather than a bad mesh; raise "
+            "AdjointRunConfig.max_unmapped_fraction if you accept that share of "
+            "the surface being frozen, or raise `resolution` to shrink it."
         )
     out = sens_values[idx].astype(np.float64, copy=True)
     if n_bad:
@@ -983,6 +1021,7 @@ def invoke_adjoint(
             # function signature but not this call; verifying "the field exists"
             # and "the parameter exists" proved nothing about the wiring.
             cfg.max_unmapped_fraction,
+            cfg.max_median_match_distance_m,
         )
         succeeded = True
         return out

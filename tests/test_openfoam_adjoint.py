@@ -192,6 +192,45 @@ def test_invoke_adjoint_actually_passes_max_unmapped_fraction():
         "value would be silently ignored")
     assert "max_point_match_distance_m" in args
 
+def test_production_adjoint_defaults_are_reachable_on_this_geometry():
+    """The default must be passable by the path that uses the defaults.
+
+    --smoke overrode max_unmapped_fraction to 0.25 and passed; a real run passes
+    adjoint_kwargs={} and got 0.05, against a measured 21.36% on this geometry.
+    So the smoke path worked and the production path could never complete a
+    single adjoint. Same shape as every other bug this session: the tested
+    configuration and the real one were different configurations.
+    """
+    cfg = AdjointRunConfig()
+    assert cfg.max_unmapped_fraction >= 0.25, (
+        f"default max_unmapped_fraction is {cfg.max_unmapped_fraction}; the "
+        f"measured share on this geometry is 0.2136, so production would fail")
+
+
+def test_median_distance_limit_brackets_the_measured_values():
+    """The median guard replaces the fraction as the "is the mesh any good"
+    test, so its limit must sit above a healthy median and below a broken one.
+
+    Measured healthy median at `medium`: 0.652 mm. A mesh that has drifted or
+    collapsed shows orders of magnitude more.
+    """
+    cfg = AdjointRunConfig()
+    assert cfg.max_median_match_distance_m > 0.652e-3, (
+        f"limit {cfg.max_median_match_distance_m} sits below the measured "
+        f"healthy median of 0.652 mm; it would fire on a good mesh")
+    assert cfg.max_median_match_distance_m < 0.05, (
+        f"limit {cfg.max_median_match_distance_m} is too loose to catch a mesh "
+        f"that has drifted away from the STL")
+
+
+def test_invoke_adjoint_passes_the_median_guard_too():
+    import inspect
+    src = inspect.getsource(oa.invoke_adjoint)
+    assert "max_median_match_distance_m" in src, (
+        "invoke_adjoint does not pass cfg.max_median_match_distance_m; the "
+        "config value would be silently ignored (this has happened before)")
+
+
 def test_atc_smoothing_is_measured_not_copied_from_the_tutorial():
     """nSmooth 0 (the sensitivityMaps/motorBike value) DIVERGES on this case.
 
