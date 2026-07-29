@@ -379,4 +379,36 @@ def run_half_car_adjoint(
     except (FileNotFoundError, ValueError) as exc:
         raise CFDRunError(f"Adjoint sensitivity extraction failed: {exc}") from exc
 
-    return raw_sensitivity * float(objective_weight) * ADJOINT_HALF_CAR_SCALING
+    # ESI's objective is a force COEFFICIENT, not a force, so converting the
+    # adjoint's dCd/dSurface into dD20/dSurface needs the coefficient's own
+    # denominator. Verified in the v2412 source rather than assumed:
+    #
+    #   objectiveForce.C:128   scalar Cforce = force/(0.5*UInf_*UInf_*Aref_);
+    #   objectiveForce.C:133   J_ = Cforce;
+    #   objectiveForce.C:277   denom() { return 0.5*UInf_*UInf_*Aref_; }
+    #
+    # and every sensitivity term in that file is divided by denom(). The
+    # incompressible solver's `force` is kinematic (pressure carried as p/rho),
+    # so restoring a real force needs rho back:
+    #
+    #   dD20_half/dS = 0.5 * rho * U^2 * Aref * dCd/dS
+    #
+    # Multiplying by objective_weight (dT/dD20, s/N) alone therefore left the
+    # aero gradient under-scaled. The factor is NOT a constant: Aref is this
+    # candidate's own half-car frontal area, so the error varied per candidate
+    # in proportion to frontal area -- exactly the comparison the d_halo sweep
+    # exists to make.
+    #
+    # It went unnoticed because combine_gradients normalises the aero field to
+    # unit RMS, which cancels every constant factor and leaves only the sign
+    # (see adjoint_contract.ADJOINT_HALF_CAR_SCALING's note). It matters the
+    # moment the real magnitudes are used, which is the point of computing them.
+    #
+    # ADJOINT_HALF_CAR_SCALING (2.0) still converts half-car to full car; Aref
+    # is the HALF-car area, so the two factors compose rather than overlap.
+    aref_half = openfoam_adjoint.oc.compute_frontal_area_half(str(path))
+    coefficient_to_force = (
+        0.5 * air_density_kgm3 * reference_speed_mps ** 2 * max(aref_half, 1e-9)
+    )
+    return (raw_sensitivity * float(objective_weight)
+            * coefficient_to_force * ADJOINT_HALF_CAR_SCALING)

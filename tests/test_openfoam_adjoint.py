@@ -192,6 +192,35 @@ def test_invoke_adjoint_actually_passes_max_unmapped_fraction():
         "value would be silently ignored")
     assert "max_point_match_distance_m" in args
 
+def test_adjoint_sensitivity_is_converted_from_coefficient_to_force():
+    """ESI's objective is a force COEFFICIENT; the pipeline needs a force.
+
+    Verified in the v2412 source (objectiveForce.C): J_ = Cforce =
+    force/(0.5*UInf^2*Aref), and every sensitivity term is divided by denom().
+    So the adjoint returns dCd/dSurface and multiplying by dT/dD20 (s/N) alone
+    leaves it under-scaled by 0.5*rho*U^2*Aref.
+
+    That factor is NOT constant -- Aref is the candidate's own half-car frontal
+    area -- so the error scaled with frontal area, distorting exactly the
+    between-candidate comparison the d_halo sweep exists to make. It hid because
+    combine_gradients normalises the field to unit RMS, cancelling every
+    constant factor and leaving only the sign.
+    """
+    import inspect
+    import cfd_wrapper as cw
+
+    src = inspect.getsource(cw.run_half_car_adjoint)
+    ret = [ln for ln in src.splitlines() if "return raw_sensitivity" in ln or
+           "coefficient_to_force" in ln]
+    assert any("compute_frontal_area_half" in ln for ln in src.splitlines()), (
+        "the conversion needs this candidate's own Aref, not a constant")
+    assert any("coefficient_to_force" in ln for ln in ret), (
+        "raw_sensitivity must be scaled from coefficient to force before use")
+    # And the composition must keep the half->full car factor as well.
+    assert "ADJOINT_HALF_CAR_SCALING" in src, (
+        "half-car to full-car scaling was dropped")
+
+
 def test_wrapper_defaults_match_the_config():
     """cfd_wrapper.run_half_car_adjoint restates every AdjointRunConfig default.
 
