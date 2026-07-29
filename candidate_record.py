@@ -109,14 +109,26 @@ def _mass_com_to_dict(report) -> dict:
     from a layer that does not exist there -- which is how the record ended up
     carrying no mass at all.
     """
+    # null, not [], when the report has no breakdown to give. Every real record
+    # is written from Part 3's MassReport, so `components` was always [] -- which
+    # reads as "the car is made of nothing" rather than "this layer does not
+    # carry the breakdown". A reader cannot tell those apart from an empty list.
+    components = getattr(report, "components", None)
     return {
         "total_mass_kg": report.total_mass_kg,
         "com_x_m": report.com_x_m,
         "com_y_m": report.com_y_m,
         "com_z_m": report.com_z_m,
-        "components": [_component_to_dict(c)
-                       for c in getattr(report, "components", ())],
+        "components": (None if components is None
+                       else [_component_to_dict(c) for c in components]),
+        "propellant_mass_kg": getattr(report, "propellant_mass_kg", None),
     }
+
+
+def _full_car_quantities_from_dict(data: dict) -> FullCarQuantities:
+    import dataclasses
+    names = {f.name for f in dataclasses.fields(FullCarQuantities)}
+    return FullCarQuantities(**{k: v for k, v in data.items() if k in names})
 
 
 def _mass_com_from_dict(data: dict) -> FullCarMassCOM:
@@ -125,7 +137,10 @@ def _mass_com_from_dict(data: dict) -> FullCarMassCOM:
         com_x_m=data["com_x_m"],
         com_y_m=data["com_y_m"],
         com_z_m=data["com_z_m"],
-        components=tuple(ComponentMassCOM(**component) for component in data.get("components", [])),
+        # `or []` because components is now null when the writing layer had no
+        # breakdown to give; iterating None would raise on every real record.
+        components=tuple(ComponentMassCOM(**component)
+                         for component in (data.get("components") or [])),
     )
 
 
@@ -144,11 +159,16 @@ def _record_to_dict(record: CandidateRecord) -> dict:
                         else _mass_com_to_dict(record.mass_report)),
         "com_report": (None if record.com_report is None
                        else _mass_com_to_dict(record.com_report)),
+        # Hand-listed field names, so anything added upstream stops here. That
+        # is how force_oscillation -- the reproducibility bar on D20, measured
+        # at 26-33% against a 5% limit -- was plumbed from Part 2 into
+        # CFDOutcome and then silently dropped one layer before the file it was
+        # meant to reach. getattr, so a report that predates a field (or a test
+        # double that never had it) still serialises instead of raising.
         "cfd_force_report": (None if record.cfd_force_report is None else {
-            "D20": record.cfd_force_report.D20,
-            "L": record.cfd_force_report.L,
-            "Cm": record.cfd_force_report.Cm,
-            "A": record.cfd_force_report.A,
+            k: getattr(record.cfd_force_report, k, None)
+            for k in ("D20", "L", "Cm", "A", "converged", "residual_final",
+                      "force_oscillation")
         }),
         "T_raw": record.T_raw,
         "T_penalized": record.T_penalized,
@@ -225,7 +245,11 @@ def read_candidate_record(path: str) -> CandidateRecord:
         stl_path=data.get("stl_path") or "",
         mass_report=_opt("mass_report", _mass_com_from_dict),
         com_report=_opt("com_report", _mass_com_from_dict),
-        cfd_force_report=_opt("cfd_force_report", lambda d: FullCarQuantities(**d)),
+        # Filtered: the record now also stores the health fields (converged,
+        # residual_final, force_oscillation) that FullCarQuantities does not
+        # model. Splatting the whole dict raised TypeError on every record
+        # written after they were added. They stay readable from the raw json.
+        cfd_force_report=_opt("cfd_force_report", _full_car_quantities_from_dict),
         T_raw=data.get("T_raw"),
         T_penalized=data.get("T_penalized"),
         gradients=data.get("gradients") or {},

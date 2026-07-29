@@ -1,4 +1,5 @@
 import json
+import pathlib
 import sys
 import tempfile
 from pathlib import Path
@@ -224,6 +225,67 @@ def test_invalid_lifecycle_state_rejected_at_construction():
     except ValueError:
         return
     raise AssertionError("Expected ValueError for invalid lifecycle_state at construction")
+
+
+def test_the_record_carries_every_cfd_number_the_pipeline_measured():
+    """Round-trip the fields a ranked table needs, including the error bar.
+
+    force_oscillation is the reproducibility bar on D20 -- measured 26-33%
+    against a 5% limit on the real run. It was plumbed from Part 2 into
+    CFDOutcome and then dropped here, because _record_to_dict hand-listed
+    D20/L/Cm/A. A ranking whose error bar was computed and then discarded is
+    worse than one that never had it: it looks authoritative.
+    """
+    import json
+    import tempfile
+    from dataclasses import dataclass
+    from typing import Optional
+
+    @dataclass(frozen=True)
+    class _CFD:
+        D20: float = 0.687
+        L: float = 0.0665
+        Cm: float = 0.1335
+        A: float = 0.00742
+        converged: bool = True
+        residual_final: float = 2.1e-3
+        force_oscillation: Optional[float] = 0.327
+
+    @dataclass(frozen=True)
+    class _Mass:
+        total_mass_kg: float = 0.1494
+        com_x_m: float = 0.12196
+        com_y_m: float = 0.0
+        com_z_m: float = 0.029605
+        propellant_mass_kg: float = 0.007871
+
+    rec = CandidateRecord(
+        candidate_id="dhalo16_W120_c0_r0_iter0002", W_mm=120.0,
+        x_front_mm=42.9, d_halo_mm=16.0,
+        phi_grid_snapshot_paths={}, mass_report=_Mass(), com_report=_Mass(),
+        cfd_force_report=_CFD(), T_raw=3.0324, T_penalized=3.0324,
+        gradients={}, adjoint_sensitivity_field_path="", setup_logs={},
+        failure_reason=None, lifecycle_state="geometry_repaired",
+        stl_path="/runs/split/x_full.stl",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        path = write_candidate_record(rec, d)
+        data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        back = read_candidate_record(path)
+
+    cfd = data["cfd_force_report"]
+    assert cfd["force_oscillation"] == 0.327, (
+        f"force_oscillation did not reach the record: {cfd}")
+    assert cfd["converged"] is True and cfd["residual_final"] == 2.1e-3
+    assert data["stl_path"] == "/runs/split/x_full.stl", (
+        "the winning car's geometry is not recoverable from its own record")
+    # None, not [] -- Part 3's MassReport has no per-component breakdown, and
+    # an empty list reads as "the car is made of nothing".
+    assert data["mass_report"]["components"] is None
+    assert data["mass_report"]["propellant_mass_kg"] == 0.007871
+    # And the reader must survive the null it now writes.
+    assert back.mass_report.components == ()
+
 
 if __name__ == "__main__":
     import sys

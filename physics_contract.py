@@ -161,12 +161,20 @@ class FullCarQuantities:
       L   : N, full-car lift force at reference speed
       Cm  : dimensionless, full-car pitching moment coefficient
       A   : m^2, full-car frontal projected area
+      force_oscillation : peak-to-peak swing of streamwise force over the
+          averaged window, as a fraction of its mean. None when not measured.
+          The ERROR BAR on D20, and the reason it lives here rather than in a
+          log line: measured 26-33% on the real geometry against a 5% limit, so
+          drag differences under ~15% are not resolved by the solve that
+          produced them. A ranking that carries D20 but not this has thrown
+          away the only thing that says whether the ranking means anything.
     """
 
     D20: float
     L: float
     Cm: float
     A: float
+    force_oscillation: Optional[float] = None
 
 
 @dataclass(frozen=True)
