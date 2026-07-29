@@ -122,11 +122,17 @@ class AdjointRunConfig:
     # 6.96 (ATCModel cancel), 28.1 (nSmooth 10), 78.2 (nSmooth 3), all with
     # p50 well under 1 m/s. A diverging one reached max 2.82e+03 at 1000
     # iterations and 7.2e+45 unsmoothed. The first version of this field used
-    # 1.0e4, chosen before any healthy solve had been measured, and it let the
-    # 2.82e+03 case through. 100x freestream = 2000 m/s is still ~25x above the
-    # worst healthy maximum seen, so it stays a runaway trap rather than an
-    # accuracy check, but it no longer sits above the failures it exists for.
-    max_adjoint_velocity_ratio: float = 100.0
+    # 1.0e4, chosen before any healthy solve had been measured. 100x was the
+    # second attempt and still sat ABOVE a measured divergence: nSmooth 10 on
+    # d_halo=20 reached 130.9 -> 307.9 m/s and was still climbing, i.e. it
+    # finished 1000 iterations without tripping a 2000 m/s trap. A guard that
+    # misses a known failure mode is not a guard.
+    #
+    # 5x freestream = 100 m/s. Healthy solves measured 8-11 m/s max (nSmooth 30
+    # on both an easy and a hard geometry), so this leaves ~9x headroom over the
+    # worst healthy case while catching the slow divergence at 307 m/s. Both
+    # bounds are measured, not assumed.
+    max_adjoint_velocity_ratio: float = 5.0
 
     def __post_init__(self):
         if self.resolution not in oc.RESOLUTION_REFINEMENT:
@@ -976,7 +982,7 @@ def check_adjoint_magnitude(run_dir: str, cfg: "AdjointRunConfig") -> None:
 
     Ua has dimensions of velocity, so the freestream sets the scale: an adjoint
     velocity thousands of times the freestream is not a converged adjoint. The
-    bound is deliberately loose (default 1e4 x U_inf) -- this is a divergence
+    bound is 5x U_inf, set from measurement (see the field) -- a divergence
     trap, not an accuracy check, and it must not fire on a merely ill-conditioned
     but usable solve.
     """
@@ -1036,11 +1042,7 @@ def invoke_adjoint(
             "No ESI OpenFOAM environment found for the adjoint solve. Set "
             "$WM_PROJECT_DIR or $FOAM_BASHRC, or pass bashrc=... ."
         )
-    import uuid as _uuid
-
-    # uuid4, not hash(stl_path) % 10_000 — Part 3 runs candidates as threads in
-    # one process, so a hash collision would rmtree a live sibling case.
-    run_dir = str(Path(case_dir) / "adjoint_runs" / f"run_{os.getpid()}_{_uuid.uuid4().hex[:12]}")
+    run_dir = str(Path(case_dir) / "adjoint_runs" / oc.new_run_dir_name())
     build_adjoint_case(run_dir, stl_path, cfg)
     succeeded = False
     try:

@@ -311,10 +311,17 @@ def test_median_distance_limit_brackets_the_measured_values():
 
 def test_invoke_adjoint_passes_the_median_guard_too():
     import inspect
+    # Assert on the CALL's argument list, not on the identifier appearing
+    # anywhere in the source. A bare substring check is satisfied by a comment
+    # -- which is precisely the anti-pattern the sibling test above documents.
+    import re as _re
     src = inspect.getsource(oa.invoke_adjoint)
-    assert "max_median_match_distance_m" in src, (
-        "invoke_adjoint does not pass cfg.max_median_match_distance_m; the "
-        "config value would be silently ignored (this has happened before)")
+    call = _re.search(r"map_sensitivity_to_stl_vertices\((.*?)\)", src, _re.S)
+    assert call, "map_sensitivity_to_stl_vertices call site not found"
+    args = call.group(1)
+    assert "max_median_match_distance_m" in args, (
+        "invoke_adjoint does not PASS cfg.max_median_match_distance_m to "
+        "map_sensitivity_to_stl_vertices; the config value would be ignored")
 
 
 def test_atc_smoothing_is_measured_not_copied_from_the_tutorial():
@@ -407,7 +414,12 @@ def test_fv_solution_has_ma_solver():
     # sensitivity step with "Entry 'ma' not found in dictionary
     # system/fvSolution/solvers" -- verified live, fixed against the
     # sensitivityMaps/motorBike reference's fvSolution.
-    assert "ma" in oa._FV_SOLUTION_ADJOINT
+    # `"ma" in <string>` matched a comment and the word "same" -- deleting the
+    # whole ma solver entry left it green. Match the actual solver block.
+    import re as _re
+    assert _re.search(r"^\s*ma\s*$", oa._FV_SOLUTION_ADJOINT, _re.M) or            _re.search(r'^\s*"?\(?ma[|)"]', oa._FV_SOLUTION_ADJOINT, _re.M), (
+        "no `ma` entry in the adjoint fvSolution solvers block; the "
+        "mesh-movement/eikonal step raises 'Entry ma not found'")
     assert "preconditioner   DIC;" in oa._FV_SOLUTION_ADJOINT
 
 

@@ -71,7 +71,8 @@ class OpenFOAMRunConfig:
     # kOmegaSST is the default (audit fix 2026-07-24). The old "laminar"
     # default was not viable: Re = U*L/nu = 20*0.233/1.48e-5 = 3.15e5, where a
     # laminar steady solve does not settle — residuals stall around 1e-2..1e-3,
-    # and Part 3's require_cfd_convergence gate (residual <= 1e-3) then routes
+    # and Part 3's require_cfd_convergence gate (residual <= CONVERGENCE_RESIDUAL,
+    # 5e-3 -- 1e-3 was below the measured 2.1e-3 plateau) then routes
     # every iteration to CFD_failed until the candidate dies on 3 consecutive
     # failures. kOmegaSST also matches openfoam_adjoint, which is hardwired to
     # it — so the drag VALUE and the shape GRADIENT now come from the same
@@ -1181,6 +1182,16 @@ def _read_yplus(run_dir: str, solver_log: str) -> str:
     return solver_log
 
 
+def new_run_dir_name() -> str:
+    """Unique per-run directory name, shared by the primal and adjoint invokes.
+
+    uuid4, not `hash(stl_path) % 10_000`: Part 3 runs candidates as THREADS in
+    one process, so pid is shared and a 1-in-10k hash collision meant
+    build_case's opening `shutil.rmtree(run)` deleted a sibling's live case.
+    """
+    return f"run_{os.getpid()}_{uuid.uuid4().hex[:12]}"
+
+
 def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None,
            bashrc: Optional[str] = None,
            search_roots: Optional[Sequence[str]] = None) -> dict:
@@ -1203,10 +1214,7 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
             "This build targets openfoam.com (ESI) so the adjoint solver is "
             "available; the Foundation (.org) build will not provide it."
         )
-    # uuid4, not `hash(stl_path) % 10_000`: Part 3 runs candidates as THREADS in
-    # one process, so pid is shared and a 1-in-10k hash collision meant
-    # build_case's opening `shutil.rmtree(run)` deleted a sibling's live case.
-    run_dir = str(Path(case_dir) / "runs" / f"run_{os.getpid()}_{uuid.uuid4().hex[:12]}")
+    run_dir = str(Path(case_dir) / "runs" / new_run_dir_name())
     meta = build_case(run_dir, stl_path, cfg)
     succeeded = False
     try:

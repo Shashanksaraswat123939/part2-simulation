@@ -199,7 +199,7 @@ def run_half_car_cfd(
     Invalid input behavior:
         Raises CFDRunError if the STL path is missing, the STL is not
         watertight, negative_volume_cells > 0, or OpenFOAM is unavailable/
-        errors. Non-convergence (residual_final > 1e-3) does not raise; it
+        errors. Non-convergence (residual_final > CONVERGENCE_RESIDUAL, 5e-3) does not raise; it
         sets converged=False.
     """
     import openfoam_case

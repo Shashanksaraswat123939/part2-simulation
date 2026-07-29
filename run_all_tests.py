@@ -3,12 +3,16 @@ from pathlib import Path
 
 TEST_DIR = Path(__file__).resolve().parent / "tests"  # tests live in tests/ subfolder
 
-tests = [
-    'test_physics_contract', 'test_mass_com_ingest', 'test_cfd_wrapper',
-    'test_mesh_validation', 'test_calibration', 'test_candidate_record',
-    'test_race_objective_adapter', 'test_adjoint_contract', 'test_integration_end_to_end',
-    'test_openfoam_case', 'test_openfoam_adjoint'
-]
+# DISCOVERED, not hand-listed. The list used to name 11 modules while tests/
+# held 12: test_merge_results.py was added later and was never run by this
+# runner, which still printed "0 failed" and exited 0. Its five tests cover the
+# final ranking and the cross-shard merge guard -- the pipeline's output stage.
+#
+# Same defect as test_objective_convergence.py's hand-written __main__, which
+# sat above four tests appended after it. A hand-maintained list of what to run
+# silently stops covering whatever is added next; globbing cannot.
+tests = sorted(p.stem for p in TEST_DIR.glob("test_*.py"))
+print(f"discovered {len(tests)} test modules in {TEST_DIR}")
 total_p, total_f = 0, 0
 any_infra_failure = False
 for t in tests:
