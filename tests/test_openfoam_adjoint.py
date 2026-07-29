@@ -192,33 +192,52 @@ def test_invoke_adjoint_actually_passes_max_unmapped_fraction():
         "value would be silently ignored")
     assert "max_point_match_distance_m" in args
 
-def test_adjoint_sensitivity_is_converted_from_coefficient_to_force():
-    """ESI's objective is a force COEFFICIENT; the pipeline needs a force.
+def test_objective_is_drag_force_not_a_coefficient():
+    """Aref must make ESI's denom() collapse to 1, so J IS the drag force.
 
-    Verified in the v2412 source (objectiveForce.C): J_ = Cforce =
-    force/(0.5*UInf^2*Aref), and every sensitivity term is divided by denom().
-    So the adjoint returns dCd/dSurface and multiplying by dT/dD20 (s/N) alone
-    leaves it under-scaled by 0.5*rho*U^2*Aref.
-
-    That factor is NOT constant -- Aref is the candidate's own half-car frontal
-    area -- so the error scaled with frontal area, distorting exactly the
-    between-candidate comparison the d_halo sweep exists to make. It hid because
-    combine_gradients normalises the field to unit RMS, cancelling every
-    constant factor and leaving only the sign.
+    objectiveForce always divides by denom() = 0.5*UInf^2*Aref (:128, :277) and
+    v2412 has no raw-force objective type. With Aref set to the candidate's own
+    frontal area the objective was that car's Cd -- and Cd and D rank cars
+    differently: a car can cut drag while growing frontal area faster and score
+    WORSE on Cd for getting genuinely quicker. The race objective is in newtons,
+    so the adjoint must minimise newtons.
     """
+    import re
+    cfg = AdjointRunConfig()
+    u = cfg.reference_speed_mps
+    d = oa.build_optimisation_dict(cfg, ref_area_half=0.00375)
+    m = re.search(r"Aref\s+([0-9.eE+-]+)\s*;", d)
+    assert m, "Aref missing from the objective block"
+    aref = float(m.group(1))
+    denom = 0.5 * u * u * aref
+    assert abs(denom - 1.0) < 1e-9, (
+        f"denom() = {denom}, so the objective is a coefficient scaled by "
+        f"1/{denom}, not the drag force. Aref must be 2/UInf^2.")
+    # And it must NOT be the frontal area that was passed in.
+    assert abs(aref - 0.00375) > 1e-9, (
+        "Aref is still the candidate's frontal area, so the objective is Cd")
+
+
+def test_kinematic_force_is_converted_to_newtons():
+    """objectiveForce's `force` is kinematic -- rhoInf is read (:72) and never
+    used -- so the sensitivity needs rho to reach newtons, plus the half-to-full
+    car factor."""
     import inspect
     import cfd_wrapper as cw
 
     src = inspect.getsource(cw.run_half_car_adjoint)
-    ret = [ln for ln in src.splitlines() if "return raw_sensitivity" in ln or
-           "coefficient_to_force" in ln]
-    assert any("compute_frontal_area_half" in ln for ln in src.splitlines()), (
-        "the conversion needs this candidate's own Aref, not a constant")
-    assert any("coefficient_to_force" in ln for ln in ret), (
-        "raw_sensitivity must be scaled from coefficient to force before use")
-    # And the composition must keep the half->full car factor as well.
-    assert "ADJOINT_HALF_CAR_SCALING" in src, (
-        "half-car to full-car scaling was dropped")
+    ret = [ln for ln in src.splitlines() if "return raw_sensitivity" in ln
+           or ("air_density" in ln and "ADJOINT_HALF_CAR_SCALING" in ln)]
+    assert ret, "the sensitivity return was not found"
+    joined = " ".join(ret)
+    assert "air_density_kgm3" in joined, (
+        "kinematic force never converted to newtons; the aero gradient would be "
+        "off by a factor of rho")
+    assert "ADJOINT_HALF_CAR_SCALING" in src, "half-car to full-car scaling dropped"
+    # The frontal-area recomputation should be gone -- denom is 1 now.
+    assert "compute_frontal_area_half" not in src, (
+        "still recomputing the frontal area to undo a normalisation that no "
+        "longer happens; that is a second source of truth waiting to drift")
 
 
 def test_wrapper_defaults_match_the_config():

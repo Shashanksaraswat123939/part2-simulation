@@ -282,9 +282,34 @@ def build_optimisation_dict(cfg: AdjointRunConfig, ref_area_half: float) -> str:
     diffs this against the installed release's own shipped tutorial and is the
     5-minute way to settle any residual doubt.
     """
-    aref = max(ref_area_half, 1e-9)
     u = cfg.reference_speed_mps
     rho = cfg.air_density_kgm3
+    # OPTIMISE DRAG FORCE, NOT A DRAG COEFFICIENT.
+    #
+    # ESI's objectiveForce always divides by denom() = 0.5*UInf^2*Aref, so its
+    # objective is a force COEFFICIENT (objectiveForce.C:128 `Cforce =
+    # force/(0.5*UInf_*UInf_*Aref_)`, :133 `J_ = Cforce`). There is no raw-force
+    # objective type in v2412 -- objectiveForce is the only force objective.
+    #
+    # Aref appears NOWHERE else in that file (only :128 and denom() at :277), so
+    # choosing Aref = 2/UInf^2 makes denom exactly 1 and the objective becomes
+    # the drag force itself. That is why this is not the frontal area.
+    #
+    # Why it matters, beyond tidiness: Aref used to be THIS CANDIDATE's frontal
+    # area, so the objective was each car's own Cd. Cd and D rank cars
+    # differently -- a car can cut drag while growing frontal area faster, and
+    # score worse on Cd for getting genuinely quicker. The race objective cares
+    # about D20 in newtons, so that is what the adjoint should minimise.
+    #
+    # It also removes a duplicated computation: the Python side no longer needs
+    # to recompute the frontal area to undo a normalisation, so there is no
+    # second copy to drift out of step.
+    #
+    # The force is still KINEMATIC (objectiveForce reads rhoInf at :72 and never
+    # uses it; p and devReff are both kinematic), so cfd_wrapper multiplies by
+    # rho to reach newtons.
+    aref = 2.0 / (u * u)
+    del ref_area_half
     return oc._header("dictionary", "optimisationDict") + f"""
 optimisationManager singleRun;
 
