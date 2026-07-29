@@ -382,30 +382,44 @@ adjointManagers
                 // unit-RMS normalisation downstream turned it into silence
                 // rather than an error.
                 //
-                // Measured on this case, 150 adjoint iterations each:
-                //   nSmooth  0   |Ua| max 4.33e+13   sens top10 99.97%  (diverges)
-                //   nSmooth  1   |Ua| max 8.91e+04   sens top10 99.96%  (diverges)
-                //   nSmooth  3   |Ua| max 7.82e+01   sens top10 24.00%  (converges)
-                //   nSmooth 10   |Ua| max 2.81e+01   sens top10 20.30%  (converges)
-                //   ATCModel cancel  |Ua| max 6.96   sens top10 20.38%  (converges)
+                // MEASURE THE TREND, NOT THE ENDPOINT. A converged adjoint
+                // PLATEAUS; a slowly diverging one just has not grown enough
+                // yet. Short ladders cannot tell them apart, and this was got
+                // wrong twice: a 150-iteration ladder blessed nSmooth 10, and a
+                // 200-iteration one called it healthy on a geometry that had
+                // already reached 1.62e+06 at 1000. Run the production length.
                 //
-                // nSmooth 10 matches `cancel` on sensitivity quality without
-                // deleting the ATC term, so the gradient stays CONSISTENT --
-                // smoothing the term is a far milder approximation than
-                // dropping it. |Ua| max 28 m/s against a 20 m/s freestream is
-                // physically sane.
+                // Full 1000-iteration ladder, |Ua| trend and final sensitivity
+                // concentration, on BOTH an easy and a hard geometry:
                 //
-                // A bluff body with a large separated wake is the classic ATC
-                // instability, and this car is a brick with a 1.5 mm ride-height
-                // gap spanned by ~2.7 cells. If a future geometry diverges again,
-                // check_adjoint_magnitude will raise rather than let it through;
-                // the ladder above is the thing to re-run, and `cancel` is the
-                // fallback if smoothing stops being enough.
+                //   d_halo=20 (easy)      nSmooth 10   130.9 -> 307.9  GROWING   20.85%
+                //   d_halo=20 (easy)      nSmooth 30   7.90  -> 8.08   plateau   14.37%
+                //   d_halo=43.72 (hard)   nSmooth 10   -> 1.62e+06     DIVERGED  99%+
+                //   d_halo=43.72 (hard)   nSmooth 30   10.28 -> 11.44  plateau   14.14%
+                //   d_halo=43.72 (hard)   cancel       -> 7.95         plateau   13.22%
+                //
+                // nSmooth 10 was never stable ANYWHERE -- on the easy geometry
+                // it was diverging slowly enough to finish 1000 iterations
+                // without tripping check_adjoint_magnitude. "Works here, fails
+                // there" was really "diverging everywhere at different rates".
+                //
+                // nSmooth 30 plateaus on both, stays BELOW freestream (8-11 m/s
+                // against 20), and gives cleaner sensitivities than nSmooth 10
+                // managed even where it appeared to work.
+                //
+                // Chosen over `cancel` deliberately: cancel is marginally
+                // tighter (7.95 vs 11.44) but DELETES the adjoint transpose
+                // convection term, making the gradient inconsistent with the
+                // objective. Both sit ~200x below the divergence trap, so
+                // cancel's extra margin is headroom that cannot be spent, while
+                // consistency can. Smoothing the term is the milder
+                // approximation. `cancel` remains the fallback if a future
+                // geometry defeats smoothing.
                 ATCModel
                 {{
                     ATCModel          standard;
                     extraConvection   0;
-                    nSmooth           10;
+                    nSmooth           30;
                     zeroATCPatchTypes (wall patch);
                     maskType          pointCells;
                 }}
