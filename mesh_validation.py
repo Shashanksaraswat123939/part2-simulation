@@ -209,3 +209,78 @@ def run_speed_sensitivity_check(
         CdA_at_20mps=cda_20,
         relative_delta_CdA=abs(cda_20 - cda_5) / cda_5,
     )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+#
+# This module had none. Every function here is a library call with no caller
+# anywhere in the repo, so the mesh-independence study that
+# `--i-have-validated-cfd` asserts had been done could not actually be run --
+# the flag was assertable but not earnable. The runner is supplied explicitly
+# rather than defaulted, for the reason `_REQUIRED_RUNNER` documents: a default
+# that ignores the resolution label yields a false-positive independence result.
+
+def _cli_runner(stl_path: str, resolution: str):
+    """run_half_car_cfd bound to a resolution label, which is the whole point."""
+    return run_half_car_cfd(stl_path, resolution=resolution)
+
+
+def main(argv=None) -> int:
+    import argparse
+    import json
+
+    ap = argparse.ArgumentParser(
+        description="Mesh-independence study: solve the same STL at several "
+                    "resolutions and report the spread in D20 / L / Cm. This is "
+                    "the evidence behind --i-have-validated-cfd.")
+    ap.add_argument("stl_path", help="half-car STL, as handed to the CFD wrapper")
+    ap.add_argument("--resolutions", default="coarse,medium,fine",
+                    help="comma-separated resolution labels (default: %(default)s)")
+    ap.add_argument("--json", default=None, help="also write the result here")
+    args = ap.parse_args(argv)
+
+    resolutions = tuple(r.strip() for r in args.resolutions.split(",") if r.strip())
+    if len(resolutions) < 2:
+        ap.error("a study needs at least two resolutions to compare")
+
+    print(f"== mesh independence: {args.stl_path} ==")
+    print(f"   resolutions: {', '.join(resolutions)}")
+    print( "   each is a full CFD solve; this takes as long as that implies\n")
+
+    result = run_mesh_independence_study(
+        args.stl_path, cfd_runner=_cli_runner, resolutions=resolutions)
+
+    print(f"{'resolution':<12} {'D20 (N)':>12} {'L (N)':>12} {'Cm':>12}")
+    for res, d, l, c in zip(result.resolutions_tested, result.D20_values,
+                            result.L_values, result.Cm_values):
+        print(f"{res:<12} {d:>12.6f} {l:>12.6f} {c:>12.6f}")
+    print()
+    print(f"max relative spread   D20 {result.max_relative_spread_D20*100:6.2f}%"
+          f"   L {result.max_relative_spread_L*100:6.2f}%"
+          f"   Cm {result.max_relative_spread_Cm*100:6.2f}%")
+    print(f"passes the 5% target: {result.passes_5_percent_target}")
+    if not result.passes_5_percent_target:
+        print("  -> the solution still depends on the mesh. Refine further "
+              "before treating any drag difference below this spread as real.")
+
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump({
+                "stl_path": args.stl_path,
+                "resolutions_tested": list(result.resolutions_tested),
+                "D20_values": list(result.D20_values),
+                "L_values": list(result.L_values),
+                "Cm_values": list(result.Cm_values),
+                "max_relative_spread_D20": result.max_relative_spread_D20,
+                "max_relative_spread_L": result.max_relative_spread_L,
+                "max_relative_spread_Cm": result.max_relative_spread_Cm,
+                "passes_5_percent_target": result.passes_5_percent_target,
+            }, fh, indent=2)
+        print(f"\nwrote {args.json}")
+    return 0 if result.passes_5_percent_target else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
