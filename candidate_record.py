@@ -71,6 +71,10 @@ class CandidateRecord:
     # results, so they belong in the record rather than being dropped.
     statically_stable: Optional[bool] = None
     stability_notes: str = ""
+    # Surface the cutter cannot reach, mm^2. The number behind the
+    # "geometry_repaired" lifecycle state -- which every record in the
+    # 2026-07-29 sweep carried without ever saying by how much.
+    inaccessible_area_mm2: Optional[float] = None
 
     def __post_init__(self):
         # Guard: prevent unbounded setup_logs from creating huge JSON files.
@@ -179,6 +183,7 @@ def _record_to_dict(record: CandidateRecord) -> dict:
         "lifecycle_state": record.lifecycle_state,
         "statically_stable": record.statically_stable,
         "stability_notes": record.stability_notes,
+        "inaccessible_area_mm2": record.inaccessible_area_mm2,
     }
 
 
@@ -259,4 +264,5 @@ def read_candidate_record(path: str) -> CandidateRecord:
         lifecycle_state=data["lifecycle_state"],
         statically_stable=data.get("statically_stable"),
         stability_notes=data.get("stability_notes") or "",
+        inaccessible_area_mm2=data.get("inaccessible_area_mm2"),
     )
