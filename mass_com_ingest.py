@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 from dataclasses import dataclass
 
 from physics_contract import ComponentMassCOM, FullCarMassCOM
@@ -126,9 +128,41 @@ def ingest_mass_com(
     ]
     components = tuple(machined_components) + tuple(fixed_components)
 
+    # A machined component may legitimately reach ZERO mass -- this is a topology
+    # optimiser, and deciding not to use a region is a valid answer. It raised
+    # instead, and that killed a run: with only the mandatory cargo block pinned
+    # as hard-solid, nothing stops the mass term carving a small component away,
+    # and 'nose' hit zero on the 4th iteration of a mocked sweep (151 g -> 102 g
+    # -> 85 g, race time 2.826 s -> 1.979 s -> 1.697 s, then this raise). The
+    # warm start then carried the dead nose to the next d_halo, which failed on
+    # ITS first iteration too.
+    #
+    # Whether a car with no nose is LEGAL is a rules question, and the rule
+    # checker's job -- not the mass rollup's. It contributes zero to a
+    # mass-weighted mean, so it is simply excluded, with a warning because a
+    # vanished component is much more often a signal than an intent.
+    #
+    # NEGATIVE mass still raises. That cannot come from a volume integral and
+    # means something upstream is broken.
     for component in components:
-        if component.mass_kg <= 0:
-            raise ValueError(f"component {component.name!r} has non-positive mass")
+        if component.mass_kg < 0:
+            raise ValueError(
+                f"component {component.name!r} has NEGATIVE mass "
+                f"({component.mass_kg}); a volume integral cannot produce this")
+    empty = [c.name for c in components if c.mass_kg == 0]
+    if empty:
+        warnings.warn(
+            f"machined component(s) {empty} have been carved to zero mass and "
+            f"are excluded from the mass/COM rollup. Only the mandatory cargo "
+            f"block is pinned as hard-solid, so nothing stops the mass term "
+            f"removing a component entirely -- check the rule gates still "
+            f"reject the result if a car without them is illegal.",
+            RuntimeWarning, stacklevel=2)
+        components = tuple(c for c in components if c.mass_kg > 0)
+    if not components:
+        raise ValueError(
+            "every component has zero mass: the optimiser has removed the "
+            "entire car, which no rollup can describe")
 
     total_mass = sum(component.mass_kg for component in components)
     com_x = sum(component.mass_kg * component.com_x_m for component in components) / total_mass

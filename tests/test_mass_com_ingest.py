@@ -1,4 +1,5 @@
 import math
+import math
 import sys
 from pathlib import Path
 
@@ -63,13 +64,63 @@ def test_negative_mass_component_raises():
     raise AssertionError("Expected ValueError")
 
 
-def test_zero_mass_component_raises():
-    machined = [ComponentMassCOM("bad", 0.0, 0.0, 0.0, 0.0)]
+def test_zero_mass_component_is_excluded_and_warned_not_fatal():
+    """A carved-away component is a valid answer, not an error.
+
+    This used to raise. That killed a run: only the mandatory cargo block is
+    pinned hard-solid, so nothing stops the mass term removing a small
+    component, and 'nose' reached zero on the 4th iteration of a sweep that was
+    otherwise descending nicely (151 g -> 102 g -> 85 g, 2.826 s -> 1.979 s ->
+    1.697 s). The warm start then carried the dead nose to the next d_halo,
+    which failed on its first iteration too.
+
+    Whether a car missing a component is LEGAL is a rules question and the rule
+    checker's job. The mass rollup's job is to describe what is there.
+    """
+    import warnings
+    machined = [ComponentMassCOM("gone", 0.0, 0.0, 0.0, 0.0),
+                ComponentMassCOM("body", 0.040, 0.100, 0.0, 0.030)]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = ingest_mass_com(machined, _fixed_hardware())
+    assert any("zero mass" in str(c.message) for c in caught), (
+        "a component vanishing is far more often a signal than an intent; it "
+        "must warn")
+    # The survivor plus fixed hardware, with the empty one contributing nothing.
+    assert out.total_mass_kg > 0.040
+    assert math.isfinite(out.com_x_m) and math.isfinite(out.com_z_m)
+
+
+def test_negative_mass_component_still_raises():
+    """Zero is a carve; negative is a broken volume integral."""
+    machined = [ComponentMassCOM("bad", -1e-6, 0.0, 0.0, 0.0)]
     try:
         ingest_mass_com(machined, _fixed_hardware())
-    except ValueError:
+    except ValueError as exc:
+        assert "NEGATIVE" in str(exc) or "negative" in str(exc)
         return
-    raise AssertionError("Expected ValueError")
+    raise AssertionError("Expected ValueError for negative mass")
+
+
+def test_every_machined_component_gone_still_describes_the_hardware():
+    """All machined material carved away is still describable.
+
+    The fixed hardware -- cartridge, wheels, axles, rear wing -- does not go
+    away with it, and its masses are validated positive at construction, so the
+    rollup has something real to report. My first version of this test asserted
+    a raise here and was simply wrong about what is left.
+
+    The rollup describing it does not make it legal; that is the rule gate's
+    call. It does warn.
+    """
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = ingest_mass_com([ComponentMassCOM("gone", 0.0, 0.0, 0.0, 0.0)],
+                              _fixed_hardware())
+    assert any("zero mass" in str(c.message) for c in caught)
+    assert out.total_mass_kg > 0, "fixed hardware still has mass"
+    assert math.isfinite(out.com_x_m)
 
 
 def test_cartridge_mass_must_equal_23g():
