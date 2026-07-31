@@ -216,11 +216,29 @@ def race_value_and_grad_guarded(param_vector, model):
     T_penalized, raw_grads = race_value_and_grad(param_vector, model)
     params_jax = jnp.asarray(param_vector, dtype=jnp.float64)
 
-    # P2-3: subtract the UNCLAMPED penalty to recover T_raw exactly.
-    # The locked polynomial dips negative near delta≈0.411mm (polyfit artifact,
-    # min ≈ -37.9 µs). Clamping to 0 before subtraction left up to 37.9 µs of
-    # polyfit artifact in T_raw; subtracting the raw (possibly negative) value
-    # recovers the exact dynamics-only time regardless of the artifact's sign.
+    # P2-3, REVISED 2026-07-30. Subtract exactly what race_time_seconds baked
+    # in, whatever that is -- that is what recovers T_raw, not the clamping
+    # decision either way.
+    #
+    # The original note here read: "subtract the UNCLAMPED penalty to recover
+    # T_raw exactly. The locked polynomial dips negative near delta~0.411mm
+    # (polyfit artifact, min ~ -37.9 us). Clamping to 0 before subtraction left
+    # up to 37.9 us of polyfit artifact in T_raw." That reasoning was right
+    # about the mechanism and wrong about where to apply the fix: it kept both
+    # sides consistent by leaving both UNCLAMPED, which preserved T_raw and let
+    # T_penalized fall BELOW it. CandidateOutcome.__post_init__ rejects that,
+    # and it killed d_halo=16 three iterations into the live run that day.
+    #
+    # com_height_time_penalty now clamps at zero itself, so both sides see the
+    # same clamped value and both properties hold at once. Verified across the
+    # former well (29.8-31.2 mm): T_raw is bit-identical at every height,
+    # spread 0.000e+00 s, which is what "T_raw is dynamics-only and therefore
+    # COM-independent" demands.
+    #
+    # Consequence worth knowing: inside the clamped band the penalty and its
+    # gradient are both exactly zero, so dT/dh_com is 0 over about 0.75 mm at
+    # the optimum. That is honest -- within 38 us the fit cannot tell -- but it
+    # means the COM-height term stops steering there.
     com_h_penalty_raw = float(com_height_time_penalty(params_jax))
 
     # P2-2: com_x_time_penalty uses fabricated physics:
