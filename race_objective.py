@@ -89,7 +89,9 @@ _COM_PENALTY_DATA_MM = np.array([-12.0, -8.0, -5.0, -2.0, 0.0, 2.0, 5.0, 8.0, 12
 _COM_PENALTY_DATA_S  = np.array([ 0.028, 0.015, 0.007, 0.002, 0.0, 0.001, 0.005, 0.011, 0.020])
 
 # Fit degree-4 polynomial (offset in metres). Subtract value at delta=0 so
-# penalty is exactly 0 at the 30 mm target regardless of polyfit residuals.
+# penalty is exactly 0 at the 30 mm target regardless of polyfit residuals --
+# COM_TARGET_HEIGHT_M declares 30 mm as THE target and
+# test_T_raw_at_target_com_equals_T_penalized holds this file to it.
 _COM_PENALTY_DATA_M = _COM_PENALTY_DATA_MM * 1e-3
 _COM_POLY_COEFFS_NP = np.polyfit(_COM_PENALTY_DATA_M, _COM_PENALTY_DATA_S, 4)
 _COM_POLY_BASELINE  = float(np.polyval(_COM_POLY_COEFFS_NP, 0.0))
@@ -296,7 +298,33 @@ def com_height_time_penalty(params: jnp.ndarray) -> jnp.ndarray:
     """
     p = unpack_params(params)
     delta = p["com_height_m"] - COM_TARGET_HEIGHT_M
-    return jnp.polyval(_COM_POLY_COEFFS, delta) - _COM_POLY_BASELINE
+    raw = jnp.polyval(_COM_POLY_COEFFS, delta) - _COM_POLY_BASELINE
+    # CLAMPED AT ZERO. A penalty that pays you back is incoherent, and this one
+    # did: the degree-4 fit through nine placeholder points bottoms out at
+    # +0.4 mm rather than at the 30 mm target, so subtracting the value at the
+    # target leaves a well from 30.05 mm to 30.80 mm reaching -3.79e-5 s.
+    #
+    # Downstream that is not cosmetic. The adapter derives
+    # T_raw = T_penalized - tc*com_h_penalty, so a negative penalty puts T_raw
+    # ABOVE T_penalized and CandidateOutcome.__post_init__ rejects the iteration
+    # outright ("penalties are additive and non-negative, this is a bug
+    # upstream"). That raise killed d_halo=16 three iterations into the live run
+    # of 2026-07-30, once the carving walked com_z into the well; the reported
+    # gap was 2.03e-7 s, right at its edge.
+    #
+    # Clamping rather than re-baselining to the fit's minimum, because
+    # COM_TARGET_HEIGHT_M declares 30 mm as the target and a test holds this
+    # file to "penalty is exactly zero there". _smooth_positive is used instead
+    # of jnp.maximum because JAX differentiates this for dT/dh_com and a hard
+    # max puts a kink at the well boundary; scale is small enough that the
+    # softening is ~7e-10 s at the target, far below the 1e-9 the contract
+    # test allows and vastly below the +/-15 ms of drag noise.
+    #
+    # The well is a fitting artefact, not physics: the DATA has its minimum at
+    # 0.0 mm offset and only the degree-4 FIT wanders below. When the nine
+    # placeholder points are replaced by real ballast measurements, refit and
+    # re-check whether this clamp is still doing anything.
+    return _smooth_positive(raw, scale=1e-9)
 
 
 def com_x_time_penalty(params: jnp.ndarray) -> jnp.ndarray:

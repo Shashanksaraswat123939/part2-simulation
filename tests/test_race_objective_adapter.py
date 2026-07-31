@@ -475,15 +475,62 @@ def test_validate_thrust_csv_accepts_valid_csv():
     finally:
         Path(csv_path).unlink(missing_ok=True)
 
+
+
+def test_the_com_penalty_is_never_negative():
+    """A penalty that pays you back breaks the layer above.
+
+    The adapter derives T_raw = T_penalized - tc*com_h_penalty, so a negative
+    penalty puts T_raw ABOVE T_penalized and CandidateOutcome.__post_init__
+    rejects the iteration outright ("penalties are additive and non-negative,
+    this is a bug upstream"). That raise killed d_halo=16 three iterations into
+    the live run of 2026-07-30, with a reported gap of 2.03e-7 s.
+
+    The cause was a fitting artefact: the degree-4 fit through nine placeholder
+    points bottoms out at +0.4 mm rather than at the 30 mm target, so
+    subtracting the value AT the target left a well from 30.05 mm to 30.80 mm
+    reaching -3.79e-5 s. A 2 mm sample grid steps straight over it, which is
+    how it survived an earlier check -- so this samples finely, and across the
+    whole physical range rather than near the target only.
+    """
+    import numpy as np
+    import jax.numpy as jnp
+    from race_objective import com_height_time_penalty, PARAM_NAMES
+
+    def pen(h_mm):
+        p = np.zeros(len(PARAM_NAMES))
+        p[0], p[1], p[2], p[3] = 0.64, 0.149, 0.010, 1e-7
+        p[4], p[5], p[6], p[7] = 1.0, h_mm / 1000.0, 0.0, 0.122
+        return float(com_height_time_penalty(jnp.asarray(p)))
+
+    heights = np.linspace(15.0, 45.0, 6001)          # 5 micron steps
+    values = np.array([pen(h) for h in heights])
+    worst = values.min()
+    assert worst >= -1e-12, (
+        f"COM height penalty goes to {worst:.3e} s at "
+        f"h_com={heights[values.argmin()]:.3f} mm. T_raw is derived by "
+        f"subtracting this, so a negative value inverts T_raw and T_penalized "
+        f"and the candidate is rejected upstream.")
+
+    # And it must still be ~zero at the declared target, or the target means
+    # nothing -- the two constraints together are what forced a clamp rather
+    # than a re-baseline to the fit's own minimum.
+    assert abs(pen(30.0)) < 1e-9, (
+        f"penalty at the 30 mm target is {pen(30.0):.3e}, not ~0")
+
+
 if __name__ == "__main__":
-    import sys
-    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
-    passed, failed = 0, 0
-    for f in fns:
+    # Collected by name; a hand-written call list silently drops tests appended
+    # after it, which has already hidden several tests in this repo.
+    _mod = sys.modules[__name__]
+    _p = _f = 0
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
         try:
-            globals()[f]()
-            print("PASS", f); passed += 1
-        except Exception as e:
-            print("FAIL", f, "->", e); failed += 1
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)
+            getattr(_mod, _n)()
+            print("PASS " + _n)
+            _p += 1
+        except Exception as _e:  # noqa: BLE001
+            print("FAIL %s -> %s" % (_n, _e))
+            _f += 1
+    print("%d passed, %d failed" % (_p, _f))
+    sys.exit(1 if _f else 0)
