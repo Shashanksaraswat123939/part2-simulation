@@ -284,9 +284,29 @@ def car_mass_from_time(
     it stays exactly zero at the end for ANY thrust CSV, rather than depending
     on that constant matching the data.
     """
-    propellant_kg = sheet_mass(t, model) - model.mass_sheet_final
-    m = car_weight_kg + propellant_kg
-    return _smooth_positive(m, scale=1e-5)
+    # Clamped on the PROPELLANT, not on the total.
+    #
+    # _smooth_positive used to wrap `m = car_weight_kg + propellant_kg`, which
+    # is ~0.149 kg and never anywhere near zero, so the clamp did nothing. The
+    # quantity that actually goes negative is the propellant term: the RBF fit
+    # rings slightly below its own endpoint, so `sheet_mass(t) - mass_sheet_final`
+    # is negative for t in [0.177, 2.433] s -- 49.7% of a 3.0 s race, starting
+    # INSIDE the data range rather than only in extrapolation -- with a mean
+    # deficit of 2.8 ug and a worst case of 42.3 ug. It also rises again around
+    # t=1.61 s, i.e. spent propellant flowing back into the car.
+    #
+    # This is the same shape as the COM-penalty well fixed the same day: a
+    # fitted model breaking an invariant the arithmetic around it assumes. It
+    # never crashed anything because nothing checks the sign of a mass, it just
+    # made the car up to 42 ug too light for half the race.
+    #
+    # Small: dT/dmass * 42.3 ug is 0.74 ms worst case, about 5% of the +/-15 ms
+    # drag noise, so no ranking moves. Fixed because "propellant remaining" being
+    # negative is not a thing, and because the docstring above already says this
+    # term falls to zero.
+    propellant_kg = _smooth_positive(
+        sheet_mass(t, model) - model.mass_sheet_final, scale=1e-9)
+    return car_weight_kg + propellant_kg
 
 
 def com_height_time_penalty(params: jnp.ndarray) -> jnp.ndarray:

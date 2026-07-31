@@ -519,6 +519,47 @@ def test_the_com_penalty_is_never_negative():
         f"penalty at the 30 mm target is {pen(30.0):.3e}, not ~0")
 
 
+
+
+def test_propellant_remaining_is_never_negative():
+    """The car cannot un-burn its CO2.
+
+    car_mass_from_time adds `sheet_mass(t) - mass_sheet_final` to the dry car.
+    The RBF fit rings slightly below its own endpoint, so that term used to go
+    negative for t in [0.177, 2.433] s -- half a 3.0 s race, starting INSIDE
+    the data range rather than only in extrapolation -- reaching -42.3 ug, and
+    rising again near t=1.61 s, i.e. spent propellant flowing back in.
+
+    _smooth_positive was already applied, but to `car_weight + propellant`,
+    which is ~0.149 kg and never near zero, so the clamp did nothing. Nothing
+    ever caught it because nothing checks the sign of a mass; it just made the
+    car up to 42 ug too light for half the race. Worth 0.74 ms worst case
+    against +/-15 ms of drag noise -- negligible, and still not a thing that
+    should happen.
+    """
+    import numpy as np
+    import jax.numpy as jnp
+    from race_objective import build_smooth_sheet_model, car_mass_from_time
+
+    import os
+    csv = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "co2_thrust_data.csv")
+    model = build_smooth_sheet_model(csv)
+
+    # Well past the csv (1.499 s) -- the race integrates to ~3 s regardless.
+    ts = np.linspace(0.0, 3.2, 3201)
+    prop = np.array([float(car_mass_from_time(jnp.float64(t), 0.0, model))
+                     for t in ts])
+    assert prop.min() >= -1e-12, (
+        f"propellant remaining reaches {prop.min():.3e} kg at "
+        f"t={ts[prop.argmin()]:.3f} s; the car is lighter than empty")
+    # And it must still start at the csv's own charge and end at ~zero.
+    assert abs(prop[0] - 0.007871) < 5e-6, (
+        f"propellant at t=0 is {prop[0]:.6f} kg, not the csv's 7.871 g")
+    assert prop[-1] < 1e-6, (
+        f"propellant at t=3.2 s is {prop[-1]:.3e} kg; it should be spent")
+
+
 if __name__ == "__main__":
     # Collected by name; a hand-written call list silently drops tests appended
     # after it, which has already hidden several tests in this repo.
