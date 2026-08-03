@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from typing import Optional
 
 from dataclasses import dataclass
 
@@ -61,6 +62,24 @@ class FixedHardwareSpec:
     rear_wing_com: tuple[float, float, float]
     wheels_axles_mass_kg: float
     wheels_axles_com: tuple[float, float, float]
+    # Optional so existing callers and tests keep working with the lumped
+    # wheels-and-axles entry above.
+    #
+    # SPLIT WHEELS. Measured 2026-08-03: front 5 g, rear 6 g, both sides
+    # combined. They differ AND they sit a wheelbase apart, so a single mass at
+    # the axle midpoint puts the wheel COM (6/11 - 1/2)*W = 5.5 mm too far
+    # forward at W=120. When these are supplied they REPLACE the lumped entry.
+    wheels_front_mass_kg: Optional[float] = None
+    wheels_front_com: Optional[tuple[float, float, float]] = None
+    wheels_rear_mass_kg: Optional[float] = None
+    wheels_rear_com: Optional[tuple[float, float, float]] = None
+    # HALO. Measured 2026-08-03 at 3 g, and it had NO MASS AT ALL here before:
+    # the fixed components were cartridge, rear wing and wheels only. The halo
+    # is modelled as a void that forces phi > 0, so its geometry was respected
+    # and its weight was not -- while Stage 1's proxy path carried an 8 g stub
+    # for it, so the two stages disagreed about the mass of the same car.
+    halo_mass_kg: Optional[float] = None
+    halo_com: Optional[tuple[float, float, float]] = None
 
     def __post_init__(self) -> None:
         if abs(self.co2_cartridge_mass_kg - CO2_CARTRIDGE_MASS_KG) > 1e-9:
@@ -126,6 +145,31 @@ def ingest_mass_com(
             com_z_m=fixed_hardware.wheels_axles_com[2],
         ),
     ]
+    # Split wheels replace the lumped entry when supplied; the halo is added
+    # when supplied. Both default to absent so older callers are unaffected.
+    if (fixed_hardware.wheels_front_mass_kg is not None
+            and fixed_hardware.wheels_rear_mass_kg is not None):
+        fixed_components = [c for c in fixed_components if c.name != "wheels_axles"]
+        fixed_components.append(ComponentMassCOM(
+            name="wheels_front",
+            mass_kg=fixed_hardware.wheels_front_mass_kg,
+            com_x_m=fixed_hardware.wheels_front_com[0],
+            com_y_m=fixed_hardware.wheels_front_com[1],
+            com_z_m=fixed_hardware.wheels_front_com[2]))
+        fixed_components.append(ComponentMassCOM(
+            name="wheels_rear",
+            mass_kg=fixed_hardware.wheels_rear_mass_kg,
+            com_x_m=fixed_hardware.wheels_rear_com[0],
+            com_y_m=fixed_hardware.wheels_rear_com[1],
+            com_z_m=fixed_hardware.wheels_rear_com[2]))
+    if fixed_hardware.halo_mass_kg is not None:
+        fixed_components.append(ComponentMassCOM(
+            name="halo",
+            mass_kg=fixed_hardware.halo_mass_kg,
+            com_x_m=fixed_hardware.halo_com[0],
+            com_y_m=fixed_hardware.halo_com[1],
+            com_z_m=fixed_hardware.halo_com[2]))
+
     components = tuple(machined_components) + tuple(fixed_components)
 
     # A machined component may legitimately reach ZERO mass -- this is a topology
