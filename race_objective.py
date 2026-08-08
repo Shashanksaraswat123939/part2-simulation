@@ -79,7 +79,12 @@ G = 9.81
 TRACK_LENGTH = 20.0
 REFERENCE_SPEED = 20.0
 N_WHEELS = 4
-R_WHEEL = 0.015
+# 14.13 mm, measured on hardware_cad/front_wheel.stl (28.26 mm diameter,
+# inside T7.5's 28.0-32.0). Was 0.015 -- a round number, 0.87 mm larger than
+# the wheel actually being run. It divides the rotational inertia term in
+# m_eff, so an oversized radius understates how much the wheels resist
+# spinning up. Must stay equal to geometry_contract.R_WHEEL_M.
+R_WHEEL = 0.01413
 
 # COM penalty model.
 # Placeholder data points: (offset_mm, penalty_s) where offset = com_height_mm - 30.
