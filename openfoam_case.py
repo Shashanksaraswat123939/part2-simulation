@@ -851,6 +851,80 @@ def parse_total_vector_dat(
     return tuple(sum(r[i] for r in tail) / len(tail) for i in (1, 2, 3))
 
 
+def force_mean_convergence(
+    dat_text: str, average_fraction: float = FORCE_AVERAGE_FRACTION
+) -> tuple[float, float]:
+    """Error bar on the MEAN streamwise force, and how much it is still drifting.
+
+    Returns (stderr_fraction, drift_fraction), both as fractions of the mean.
+
+    Why this exists alongside force_oscillation_fraction: peak-to-peak answers
+    "how unsteady is the signal", but the number the optimiser ranks on is the
+    MEAN over the window, and those are different questions. Peak-to-peak is
+    max-minus-min, so one outlier sets it and it does NOT shrink as you average
+    longer. The uncertainty of a mean does shrink, which is why a solve can
+    swing 8.9% peak-to-peak and still deliver a mean good to a fraction of a
+    percent -- or not, and peak-to-peak cannot tell you which.
+
+      stderr_fraction: standard error of the mean, corrected for
+        autocorrelation. Consecutive SIMPLE iterations are highly correlated,
+        so the naive std/sqrt(N) understates the error by the square root of
+        the integrated autocorrelation time; N_eff = N / (1 + 2*sum rho_k),
+        summed until rho_k first goes non-positive (Sokal's window). THIS is
+        the error bar on D20: a drag delta smaller than it is not measurable.
+
+      drift_fraction: |slope| * window_length / |mean|, from a least-squares
+        line through the window. This is the one that matters most here.
+        parse_total_vector_dat's own measurements found the force still moving
+        2-4% per decade of iterations -- the solve is DRIFTING, not oscillating
+        about a settled value. A drifting mean is not a converged mean, and
+        averaging cannot fix it: each window averages a different part of a
+        moving signal, which is exactly why that docstring's window sweep is
+        non-monotonic (1.20%, 2.10%, 2.75%, 1.54%, 0.70%, 5.67%). When drift
+        dominates, the fix is more iterations, not a longer window.
+    """
+    rows = _force_history(dat_text)
+    if not rows:
+        raise ValueError("force/moment .dat contained no parsable data rows")
+    width = max(len(r) for r in rows)
+    rows = [r for r in rows if len(r) == width]
+    if not 0.0 < average_fraction <= 1.0:
+        raise ValueError("average_fraction must be in (0, 1]")
+    k = max(int(len(rows) * average_fraction), 1)
+    fx = [r[1] for r in rows[-k:]]
+    n = len(fx)
+    mean = sum(fx) / n
+    if mean == 0.0:
+        return float("inf"), float("inf")
+    if n < 3:
+        # Too few samples to say anything about either statistic. inf rather
+        # than 0.0: "unknown" must not read as "perfectly converged".
+        return float("inf"), float("inf")
+
+    dev = [v - mean for v in fx]
+    var = sum(d * d for d in dev) / (n - 1)
+    if var <= 0.0:
+        return 0.0, 0.0
+
+    # Integrated autocorrelation time, Sokal's automatic window.
+    tau = 1.0
+    for lag in range(1, n // 2):
+        rho = sum(dev[i] * dev[i + lag] for i in range(n - lag)) / ((n - lag) * var)
+        if rho <= 0.0:
+            break
+        tau += 2.0 * rho
+    n_eff = max(1.0, n / tau)
+    stderr_fraction = (var ** 0.5 / n_eff ** 0.5) / abs(mean)
+
+    # Least-squares slope over the window, in force units per sample.
+    xs = list(range(n))
+    x_mean = (n - 1) / 2.0
+    sxx = sum((x - x_mean) ** 2 for x in xs)
+    slope = sum((x - x_mean) * d for x, d in zip(xs, dev)) / sxx if sxx else 0.0
+    drift_fraction = abs(slope) * (n - 1) / abs(mean)
+    return stderr_fraction, drift_fraction
+
+
 def force_oscillation_fraction(
     dat_text: str, average_fraction: float = FORCE_AVERAGE_FRACTION
 ) -> float:
@@ -1137,6 +1211,26 @@ def read_force_oscillation(run_dir: str) -> Optional[float]:
         return None
 
 
+def read_force_mean_convergence(run_dir: str) -> tuple[Optional[float], Optional[float]]:
+    """(stderr_fraction, drift_fraction) for the streamwise force, or (None, None).
+
+    Same file discovery as read_force_oscillation; see force_mean_convergence
+    for what the two numbers mean and why peak-to-peak does not replace them.
+    """
+    root = Path(run_dir) / "postProcessing" / "forces"
+    if not root.is_dir():
+        return None, None
+    force_f = _find_latest(root, ("force.dat",)) or _find_latest(root, ("forces.dat",))
+    if force_f is None:
+        return None, None
+    try:
+        return force_mean_convergence(
+            force_f.read_text(encoding="utf-8", errors="replace")
+        )
+    except ValueError:
+        return None, None
+
+
 def read_force_and_moment(run_dir: str) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Return ((Fx,Fy,Fz), (Mx,My,Mz)) from postProcessing/forces.
 
@@ -1224,6 +1318,7 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
         courant = parse_max_courant(logs["solver_log"])
         (fx, _fy, fz), (_mx, my, _mz) = read_force_and_moment(run_dir)
         force_osc = read_force_oscillation(run_dir)
+        force_se, force_drift = read_force_mean_convergence(run_dir)
         try:
             yp_min, yp_max = parse_yplus_range(_read_yplus(run_dir, logs["solver_log"]))
         except ValueError:
@@ -1235,6 +1330,8 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
             "pitching_moment_half": my,
             "residual_final": residual,
             "force_oscillation": force_osc,
+            "force_mean_stderr": force_se,
+            "force_drift": force_drift,
             "negative_volume_cells": neg,
             "y_plus_min": yp_min,
             "y_plus_max": yp_max,

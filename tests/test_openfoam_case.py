@@ -467,3 +467,65 @@ if __name__ == "__main__":
             failed += 1
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+def test_peak_to_peak_ranks_solve_quality_backwards_and_stderr_does_not():
+    """The error on D20 is the error on a MEAN, not the swing of the signal.
+
+    force_oscillation_fraction is max-minus-min: one outlier sets it, and it
+    does not shrink as you average over more samples. But D20 is a mean, whose
+    uncertainty does shrink. So the two statistics disagree about which solves
+    are trustworthy -- and on these three signals peak-to-peak gets the order
+    exactly backwards, calling the drifting solve the best of the three.
+
+    That matters because MAX_FORCE_OSCILLATION gates on it: a solve whose mean
+    is pinned to 0.35% was being reported as unusable at 26% peak-to-peak.
+    """
+    import math
+    import random
+
+    from openfoam_case import force_mean_convergence, force_oscillation_fraction
+
+    def _dat(vals):
+        head = "# Time (total_x total_y total_z) (p_x p_y p_z) (v_x v_y v_z)\n"
+        return head + "".join(
+            f"{i} ({v} 0 0) (0 0 0) (0 0 0)\n" for i, v in enumerate(vals))
+
+    random.seed(0)
+    n = 1000
+    settled = [10.0 + random.gauss(0, 0.5) for _ in range(n)]
+    oscillating = [10.0 + 2.0 * math.sin(i / 5.0) for i in range(n)]
+    drifting = [10.0 + 0.004 * i + random.gauss(0, 0.2) for i in range(n)]
+
+    pp = {k: force_oscillation_fraction(_dat(v)) for k, v in
+          (("settled", settled), ("osc", oscillating), ("drift", drifting))}
+    se = {}
+    dr = {}
+    for k, v in (("settled", settled), ("osc", oscillating), ("drift", drifting)):
+        se[k], dr[k] = force_mean_convergence(_dat(v))
+
+    # A settled solve has a big peak-to-peak (it is noisy) but a mean that is
+    # nailed down. Peak-to-peak alone would reject it.
+    assert pp["settled"] > 0.20, pp["settled"]
+    assert se["settled"] < 0.01, f"mean of a settled solve should be tight, got {se['settled']}"
+
+    # The drifting solve has the SMALLEST peak-to-peak of the three and is the
+    # least trustworthy: its mean is still moving.
+    assert pp["drift"] < pp["settled"], "the premise of this test"
+    assert dr["drift"] > 4 * dr["settled"], (
+        f"drift should dominate for a drifting signal: {dr['drift']} vs {dr['settled']}")
+    assert dr["drift"] > se["drift"], (
+        "when drift exceeds the standard error the mean has not settled, and "
+        "that is the case a longer averaging window cannot fix")
+
+    # A stationary oscillation is honestly reported as noisier in the mean than
+    # the settled case, without being confused for drift.
+    assert se["osc"] > se["settled"]
+
+    # And a perfectly flat signal is zero on both.
+    flat_se, flat_dr = force_mean_convergence(_dat([7.0] * 100))
+    assert flat_se == 0.0 and flat_dr == 0.0, (flat_se, flat_dr)
+
+    # Too few samples must read as "unknown", never as "converged".
+    short_se, short_dr = force_mean_convergence(_dat([7.0, 7.1]))
+    assert short_se == float("inf") and short_dr == float("inf")

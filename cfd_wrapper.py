@@ -30,6 +30,22 @@ from physics_contract import (
 # averaging window, or an unsteady solver.
 MAX_FORCE_OSCILLATION: float = 0.05
 
+# Largest standard error of the MEAN streamwise force (as a fraction of that
+# mean) for which a drag DELTA is measurable.
+#
+# This is the threshold that matters, and it is a different quantity from
+# MAX_FORCE_OSCILLATION above. D20 is a mean; the error on a mean is its
+# standard error, which shrinks as sqrt(N_eff) with a longer window, whereas
+# peak-to-peak is max-minus-min and does not shrink at all. A solve can swing
+# 8.9% peak-to-peak and still pin its mean to a fraction of a percent.
+#
+# 1% is set against the job: the first working adjoint step produced a 5.43%
+# drag reduction, and parse_total_vector_dat's window sweep showed averaging
+# lands in the 1-3% band. Below 1% that step is a real measurement; above it,
+# candidates are being ranked by noise. Not loosened to whatever the solver
+# currently achieves -- the point is to say when the number cannot do its job.
+MAX_FORCE_MEAN_STDERR: float = 0.01
+
 # Final p-residual at or below which a solve counts as converged.
 #
 # SET FROM MEASUREMENT, and the value is a statement about this geometry rather
@@ -79,6 +95,16 @@ class CFDHealthReport:
     # step. None when no force history was available -- None rather than NaN so
     # two identical reports compare equal (NaN != NaN breaks dataclass equality).
     force_oscillation: Optional[float] = None
+    # Error bar on the MEAN streamwise force (the number D20 is built from),
+    # as a fraction of that mean, autocorrelation-corrected. This -- not
+    # force_oscillation -- is what a drag delta must exceed to be measurable.
+    # Peak-to-peak is max-minus-min and does not shrink with a longer window;
+    # the uncertainty of a mean does.
+    force_mean_stderr: Optional[float] = None
+    # How much the mean is still MOVING across the window (|slope|*span/mean).
+    # If this dominates force_mean_stderr the solve has not settled and the
+    # answer is more iterations -- averaging cannot fix a drifting signal.
+    force_drift: Optional[float] = None
 
 
 class CFDRunError(Exception):
@@ -256,16 +282,49 @@ def run_half_car_cfd(
     # force is fatal is a policy decision for the caller who knows what the
     # number is being used for — ranking candidates needs it small, exercising
     # the pipeline does not.
-    if (force_oscillation is not None
-            and force_oscillation > MAX_FORCE_OSCILLATION):
+    def _opt(key):
+        v = result.get(key)
+        return None if v is None or v != v else float(v)
+
+    force_mean_stderr = _opt("force_mean_stderr")
+    force_drift = _opt("force_drift")
+
+    # Warn on the statistic that answers the question actually being asked --
+    # "is this drag delta measurable" -- which is the error on the MEAN, not
+    # the peak-to-peak of the signal. Peak-to-peak is max-minus-min: one
+    # outlier sets it and it does not shrink with a longer window, so an 8.9%
+    # swing says nothing about whether the mean is good to 0.5% or 5%.
+    if force_mean_stderr is not None and force_mean_stderr > MAX_FORCE_MEAN_STDERR:
+        drift_txt = (
+            f" and still drifting {force_drift*100:.1f}% across the window"
+            if force_drift is not None and force_drift > force_mean_stderr
+            else ""
+        )
+        advice = (
+            "the mean has not settled, so a longer averaging window cannot fix "
+            "it -- run more iterations"
+            if force_drift is not None and force_drift > force_mean_stderr
+            else "average over more iterations, or accept this as the noise floor"
+        )
         warnings.warn(
-            f"streamwise force is still swinging {force_oscillation*100:.1f}% "
-            f"peak-to-peak over the averaged window (limit "
-            f"{MAX_FORCE_OSCILLATION*100:.0f}%). The reported D20 is a mean over "
-            f"an unsteady signal, reproducible to roughly half that spread. "
-            f"Drag deltas smaller than it are not measurable. Residual "
+            f"D20 is a mean whose standard error is "
+            f"{force_mean_stderr*100:.2f}% of itself (limit "
+            f"{MAX_FORCE_MEAN_STDERR*100:.1f}%){drift_txt}. Drag deltas below "
+            f"that are not measurable, so candidates closer than it are being "
+            f"ranked by noise. {advice[0].upper()}{advice[1:]}. Residual "
             f"convergence does not cover this — a steady solver on an unsteady "
-            f"wake plateaus its residuals while the forces keep swinging.",
+            f"wake plateaus its residuals while the forces keep moving.",
+            RuntimeWarning, stacklevel=2,
+        )
+    elif (force_oscillation is not None
+            and force_oscillation > MAX_FORCE_OSCILLATION
+            and force_mean_stderr is None):
+        # No force history detail available; fall back to the coarse signal.
+        warnings.warn(
+            f"streamwise force is swinging {force_oscillation*100:.1f}% "
+            f"peak-to-peak over the averaged window (limit "
+            f"{MAX_FORCE_OSCILLATION*100:.0f}%), and the per-sample history "
+            f"needed to compute the error on the mean was not available.",
             RuntimeWarning, stacklevel=2,
         )
     health = CFDHealthReport(
@@ -276,6 +335,8 @@ def run_half_car_cfd(
         y_plus_max=float(result["y_plus_max"]),
         courant_max=None if result.get("courant_max") is None else float(result["courant_max"]),
         force_oscillation=force_oscillation,
+        force_mean_stderr=force_mean_stderr,
+        force_drift=force_drift,
     )
     return half, health
 
