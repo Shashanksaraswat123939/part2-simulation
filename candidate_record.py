@@ -75,6 +75,11 @@ class CandidateRecord:
     # "geometry_repaired" lifecycle state -- which every record in the
     # 2026-07-29 sweep carried without ever saying by how much.
     inaccessible_area_mm2: Optional[float] = None
+    # Part 3 folds these into T_penalized, so without fields here no record can
+    # say how much of its own race time was manufacturing cost. inner_loop has
+    # been passing them and write_record has been dropping them with a warning.
+    manufacturing_penalty_s: Optional[float] = None
+    rule_margin_penalty_s: Optional[float] = None
 
     def __post_init__(self):
         # Guard: prevent unbounded setup_logs from creating huge JSON files.
@@ -148,6 +153,21 @@ def _mass_com_from_dict(data: dict) -> FullCarMassCOM:
     )
 
 
+def _dataclass_to_dict(obj) -> dict:
+    """Every field of a dataclass, so the serialiser follows its source.
+
+    Falls back to __dict__ for a non-dataclass, and to str() for a scalar, so
+    a caller passing something unexpected still persists something legible
+    instead of vanishing.
+    """
+    import dataclasses as _dc
+    if _dc.is_dataclass(obj) and not isinstance(obj, type):
+        return {f.name: getattr(obj, f.name, None) for f in _dc.fields(obj)}
+    if hasattr(obj, "__dict__"):
+        return dict(vars(obj))
+    return {"value": str(obj)}
+
+
 def _record_to_dict(record: CandidateRecord) -> dict:
     return {
         "candidate_id": record.candidate_id,
@@ -169,11 +189,15 @@ def _record_to_dict(record: CandidateRecord) -> dict:
         # CFDOutcome and then silently dropped one layer before the file it was
         # meant to reach. getattr, so a report that predates a field (or a test
         # double that never had it) still serialises instead of raising.
-        "cfd_force_report": (None if record.cfd_force_report is None else {
-            k: getattr(record.cfd_force_report, k, None)
-            for k in ("D20", "L", "Cm", "A", "converged", "residual_final",
-                      "force_oscillation")
-        }),
+        # Field list DERIVED from the object, not hand-written. The literal
+        # tuple this replaces silently dropped anything added upstream: the
+        # comment above records force_oscillation having to be hand-added after
+        # exactly that, and it then happened again to force_mean_stderr and
+        # force_drift -- the error bar on D20 was computed, warned about, and
+        # thrown away here on the way to disk. getattr(..., None) also meant a
+        # typo in the tuple produced a null rather than an error.
+        "cfd_force_report": (None if record.cfd_force_report is None
+                             else _dataclass_to_dict(record.cfd_force_report)),
         "T_raw": record.T_raw,
         "T_penalized": record.T_penalized,
         "gradients": record.gradients,
@@ -184,6 +208,8 @@ def _record_to_dict(record: CandidateRecord) -> dict:
         "statically_stable": record.statically_stable,
         "stability_notes": record.stability_notes,
         "inaccessible_area_mm2": record.inaccessible_area_mm2,
+        "manufacturing_penalty_s": record.manufacturing_penalty_s,
+        "rule_margin_penalty_s": record.rule_margin_penalty_s,
     }
 
 

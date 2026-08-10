@@ -299,3 +299,56 @@ if __name__ == "__main__":
             print("FAIL", f, "->", e); failed += 1
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+def test_serialiser_follows_the_dataclass_instead_of_a_hand_written_list():
+    """A field added upstream must reach disk without editing this file.
+
+    _record_to_dict used to build cfd_force_report from a literal tuple of
+    names. Anything added to the CFD outcome was silently dropped: the comment
+    in that function records force_oscillation having to be hand-added after
+    exactly that, and it happened again to force_mean_stderr and force_drift --
+    the error bar on D20 was computed, warned about, and then thrown away on
+    the way to disk. getattr(..., None) also meant a typo in the tuple produced
+    a null rather than an error.
+    """
+    import dataclasses
+    import json
+    import tempfile
+
+    from candidate_record import CandidateRecord, write_candidate_record
+
+    @dataclasses.dataclass(frozen=True)
+    class _Cfd:
+        D20: float = 0.5
+        L: float = -0.01
+        Cm: float = 0.2
+        A: float = 0.006
+        converged: bool = True
+        residual_final: float = 2e-3
+        force_oscillation: float = 0.08
+        force_mean_stderr: float = 0.0035      # added after the tuple was written
+        force_drift: float = 0.0029            # ditto
+        a_field_nobody_has_added_yet: float = 42.0
+
+    rec = CandidateRecord(
+        candidate_id="serialiser_check", W_mm=130.0, d_halo_mm=16.0,
+        lifecycle_state="valid_simulated", cfd_force_report=_Cfd(),
+        manufacturing_penalty_s=0.044, rule_margin_penalty_s=0.0,
+    )
+    with tempfile.TemporaryDirectory() as d:
+        written = json.load(open(write_candidate_record(rec, d), encoding="utf-8"))
+
+    cfd = written["cfd_force_report"]
+    for name in (f.name for f in dataclasses.fields(_Cfd)):
+        assert name in cfd, (
+            f"{name} never reached disk -- the serialiser is enumerating field "
+            "names by hand again")
+    assert cfd["force_mean_stderr"] == 0.0035
+    assert cfd["a_field_nobody_has_added_yet"] == 42.0, (
+        "a field added upstream must persist without editing candidate_record")
+
+    # The Part 3 penalties are folded into T_penalized, so a record that omits
+    # them cannot say how much of its race time was manufacturing cost.
+    assert written["manufacturing_penalty_s"] == 0.044
+    assert written["rule_margin_penalty_s"] == 0.0
