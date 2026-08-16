@@ -69,7 +69,7 @@ def test_merge_ranks_by_race_time():
         r = subprocess.run([sys.executable, str(_ROOT / "merge_results.py"), td],
                            capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, f"merge failed: {r.stdout}\n{r.stderr}"
-    assert "BEST: d_halo=30.00" in r.stdout, (
+    assert "BEST" in r.stdout and "d_halo=30.00" in r.stdout, (
         f"ranked the wrong candidate best:\n{r.stdout}")
     # The noise caveat must travel with the answer, not live only in a doc.
     assert "15 ms" in r.stdout, "the drag-noise caveat is missing from the output"
@@ -137,12 +137,60 @@ def test_merge_reports_unscored_candidates_rather_than_dropping_them():
         "failed candidates must be reported, not silently dropped from the count")
 
 
+def test_ranking_uses_T_penalized_and_drops_underweight_cars():
+    """The last step must answer the question the optimiser was solving.
+
+    merge_results sorted on T_raw, discarding every penalty the pipeline had
+    just computed -- COM, manufacturing, and the T3.6 minimum mass. On the
+    2026-08-11 sweep that named a 45.97 g car the winner: two grams under the
+    48 g floor, illegal, and beaten on T_penalized by a legal car it was only
+    "faster" than on raw time.
+
+    The mass floor is the harder of the two tests. Its penalty is sized to
+    steer the DESCENT; it is not a price a candidate may pay to win, so an
+    underweight car is excluded from the ranking rather than merely charged.
+    """
+    import json
+    import subprocess
+    import sys
+    import tempfile
+
+    from candidate_record import CandidateRecord, write_candidate_record
+    from physics_contract import FullCarMassCOM
+
+    def rec(cid, d, t_raw, t_pen, grams):
+        return CandidateRecord(
+            candidate_id=cid, W_mm=120.0, x_front_mm=42.9, d_halo_mm=d,
+            lifecycle_state="geometry_repaired", T_raw=t_raw, T_penalized=t_pen,
+            mass_report=FullCarMassCOM(total_mass_kg=grams / 1000.0,
+                                       com_x_m=0.12, com_y_m=0.0, com_z_m=0.03))
+
+    with tempfile.TemporaryDirectory() as td:
+        # Fastest on RAW time, but 2 g underweight -> must not win, must not rank.
+        write_candidate_record(rec("illegal", 44.0, 1.4754, 1.6834, 68.97), td)
+        # Slower raw, better penalised, and legal.
+        write_candidate_record(rec("legal_a", 16.0, 1.4811, 1.5095, 71.14), td)
+        write_candidate_record(rec("legal_b", 30.0, 1.4790, 1.5311, 71.02), td)
+        r = subprocess.run([sys.executable, str(_ROOT / "merge_results.py"), td],
+                           capture_output=True, text=True, timeout=300)
+
+    assert r.returncode == 0, f"merge failed: {r.stdout}\n{r.stderr}"
+    assert "d_halo=16.00" in r.stdout, (
+        f"should win on T_penalized (1.5095 < 1.5311):\n{r.stdout}")
+    assert "44.00" not in r.stdout.split("BEST")[-1], (
+        "the underweight car must not be the answer")
+    assert "EXCLUDED" in r.stdout and "underweight" in r.stdout, (
+        f"exclusion must be reported, not silent:\n{r.stdout}")
+    assert "45.97" in r.stdout, "the excluded car's mass should be shown"
+
+
 if __name__ == "__main__":
-    for t in (test_summary_record_round_trips,
-              test_record_carries_drag_and_mass_for_the_ranked_table,
-              test_merge_ranks_by_race_time,
-              test_merge_refuses_records_from_different_cars,
-              test_merge_reports_unscored_candidates_rather_than_dropping_them):
-        _run(t)
+    # Collected BY NAME. The hand-written call list this replaces skipped every
+    # test appended below it -- which is exactly what happened to
+    # test_ranking_uses_T_penalized_and_drops_underweight_cars, and what
+    # test_no_test_file_silently_skips_its_own_tests exists to catch.
+    _mod = sys.modules[__name__]
+    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
+        _run(getattr(_mod, _n))
     print(f"\n{_passed} passed, {_failed} failed")
     sys.exit(1 if _failed else 0)
