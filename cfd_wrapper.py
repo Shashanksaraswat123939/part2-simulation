@@ -352,6 +352,7 @@ def run_half_car_adjoint(
     keep_run_dir: bool = False,
     stage_timeout_s: int = 14400,
     underbody_refinement_level: int = 1,
+    n_subdomains: int = 1,
     # None means "whatever AdjointRunConfig says", rather than restating it.
     #
     # This signature duplicated every one of the config's defaults and exactly
@@ -419,6 +420,7 @@ def run_half_car_adjoint(
         # of truth for this value.
         **({} if max_unmapped_fraction is None
            else {"max_unmapped_fraction": max_unmapped_fraction}),
+        n_subdomains=n_subdomains,
     )
     case_dir = Path(__file__).resolve().parent / "cfd_case_template"
 

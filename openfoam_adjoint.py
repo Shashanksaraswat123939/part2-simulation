@@ -80,13 +80,30 @@ class AdjointRunConfig:
     primal_iters: int = 1000
     adjoint_iters: int = 1000
     resolution: str = "medium"
-    # ⚠ Keep at 1. The MPI branch of run_adjoint_stages runs, but the
-    # sensitivity readback does not survive it: read_polymesh_points() reads
-    # constant/polyMesh/points, which under -parallel is still the SERIAL
-    # BACKGROUND blockMesh (snappy writes processor*/constant/polyMesh), so
-    # parse_sensitivity_points raises "N values but M points". invoke_adjoint
-    # enforces this rather than letting it fail hours in. The forward solve
-    # (openfoam_case) has no such coupling and can use MPI freely.
+    # MPI is now allowed. This was pinned to 1 with the note that
+    # read_polymesh_points() would read the background blockMesh under
+    # -parallel and parse_sensitivity_points would raise "N values but M
+    # points". That reason went stale: run_adjoint_stages' MPI branch was later
+    # reordered to mesh SERIALLY and decompose the finished mesh (the same fix
+    # openfoam_case.run_stages got), so constant/polyMesh IS the snapped mesh.
+    # The branch had simply never been run -- its own comment called it
+    # "future-proofing, not live".
+    #
+    # Measured 2026-08-11 on the real half-car STL, coarse, 1000+1000 iters:
+    #     n=1   339.5 s   sensitivity len 975,612   rms 3.023e3
+    #     n=4   167.0 s   sensitivity len 975,612   rms 2.977e3
+    # so 2.03x, and the readback works. The two gradients agree to r=0.9937
+    # with 96.0% sign agreement and 11.1% relative L2. That gap SHRINKS with
+    # convergence (at 200+200 iters it was r=0.9905, 93.2%, 13.7%), which is
+    # the signature of two incompletely-converged solves taking different paths
+    # rather than decomposition changing the answer -- domain decomposition
+    # converges to the same solution in principle.
+    #
+    # Why the residual gap is acceptable here: phi_updater's own logging shows
+    # the aero channel is 5-6% of the shape update (mass/COM carries 94%), so
+    # an 11% perturbation of it moves the update ~0.6% -- far inside the ~15 ms
+    # race-time noise the ranking already cannot resolve. Revisit if the aero
+    # share ever grows, or run the primal/adjoint to a tighter residual first.
     n_subdomains: int = 1
     underbody_refinement_level: int = 1
     stage_timeout_s: int = 14400
@@ -144,15 +161,8 @@ class AdjointRunConfig:
             raise ValueError("reference_speed_mps must be > 0")
         if self.primal_iters <= 0 or self.adjoint_iters <= 0:
             raise ValueError("primal_iters and adjoint_iters must be > 0")
-        if self.n_subdomains != 1:
-            raise ValueError(
-                "AdjointRunConfig.n_subdomains must be 1: the surfacePoints "
-                "sensitivity readback reads constant/polyMesh/points, which "
-                "under -parallel is the background blockMesh, not the snapped "
-                "mesh the sensitivity field is defined on. Fix "
-                "read_polymesh_points (reconstructParMesh) before enabling MPI "
-                "here. The FORWARD solve is unaffected and may use MPI."
-            )
+        if self.n_subdomains < 1:
+            raise ValueError("n_subdomains must be >= 1")
 
     def as_forward_config(self) -> oc.OpenFOAMRunConfig:
         """Adapts this config to openfoam_case.OpenFOAMRunConfig so the
