@@ -1,0 +1,135 @@
+name: rnd-cfd
+
+# CFD research runs on GitHub-hosted runners (no local OpenFOAM needed).
+# Answers three questions with real ESI OpenFOAM v2412 solves; see rnd/cfd_rnd.py.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["rnd/**"]
+
+concurrency:
+  group: rnd-cfd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PY_DEPS: numpy scipy pandas trimesh scikit-image shapely rtree mapbox-earcut jax jaxlib
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: part2-simulation }
+      - uses: actions/checkout@v4
+        with: { repository: Shashanksaraswat123939/part1-simulation, path: part1-simulation }
+      - uses: actions/checkout@v4
+        with: { repository: Shashanksaraswat123939/part3-simulation, path: part3-simulation }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install $PY_DEPS pytest
+      - name: Run all three suites
+        run: |
+          set +e
+          for p in part1-simulation part2-simulation part3-simulation; do
+            echo "::group::$p"
+            (cd $p && timeout 3000 python run_all_tests.py) > $p.log 2>&1
+            echo "exit $?" >> $p.log
+            tail -40 $p.log
+            echo "::endgroup::"
+          done
+          {
+            echo "## Unit tests"
+            for p in part1-simulation part2-simulation part3-simulation; do
+              echo "### $p"; echo '```'; grep -E "TOTAL|passed|failed|FAIL|exit" $p.log | tail -25; echo '```'
+            done
+          } >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: unit-test-logs, path: "*.log" }
+
+  fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: part2-simulation }
+      - uses: actions/checkout@v4
+        with: { repository: Shashanksaraswat123939/part1-simulation, path: part1-simulation }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install $PY_DEPS
+      - name: Build leader-like car and +/-0.3 mm inflations
+        working-directory: part2-simulation
+        run: |
+          mkdir -p ../fixture
+          python rnd/cfd_rnd.py fixture --out ../fixture/car.stl
+          python rnd/cfd_rnd.py inflate --stl ../fixture/car.stl --delta-mm 0.3  --out ../fixture/car_p.stl
+          python rnd/cfd_rnd.py inflate --stl ../fixture/car.stl --delta-mm -0.3 --out ../fixture/car_m.stl
+      - uses: actions/upload-artifact@v4
+        with: { name: fixture, path: fixture/ }
+
+  cfd:
+    needs: fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: F1_legacy_stl_base,   cmd: "forward --stl car.stl   --inlet legacy --frame stl   --shift-um 0 --res coarse" }
+          - { id: F2_legacy_stl_shift,  cmd: "forward --stl car.stl   --inlet legacy --frame stl   --shift-um 1 --res coarse" }
+          - { id: F3_fixed_stl_base,    cmd: "forward --stl car.stl   --inlet fixed  --frame stl   --shift-um 0 --res coarse" }
+          - { id: F4_fixed_stl_shift,   cmd: "forward --stl car.stl   --inlet fixed  --frame stl   --shift-um 1 --res coarse" }
+          - { id: F5_fixed_frame_base,  cmd: "forward --stl car.stl   --inlet fixed  --frame fixed --shift-um 0 --res coarse" }
+          - { id: F6_fixed_frame_shift, cmd: "forward --stl car.stl   --inlet fixed  --frame fixed --shift-um 1 --res coarse" }
+          - { id: M_base,               cmd: "forward --stl car.stl   --inlet fixed  --frame fixed --res medium" }
+          - { id: M_plus,               cmd: "forward --stl car_p.stl --inlet fixed  --frame fixed --res medium" }
+          - { id: M_minus,              cmd: "forward --stl car_m.stl --inlet fixed  --frame fixed --res medium" }
+          - { id: ADJ,                  cmd: "adjoint --stl car.stl   --frame fixed --res medium", out: sens.npz }
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: part2-simulation }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install numpy scipy pandas trimesh
+      - name: Install ESI OpenFOAM v2412
+        run: |
+          curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash
+          sudo apt-get install -y openfoam2412-default
+          ls /usr/lib/openfoam
+      - uses: actions/download-artifact@v4
+        with: { name: fixture, path: fixture }
+      - name: Solve ${{ matrix.id }}
+        working-directory: fixture
+        run: |
+          OUT="${{ matrix.out }}"; OUT="${OUT:-${{ matrix.id }}.json}"
+          mkdir -p ../out
+          python ../part2-simulation/rnd/cfd_rnd.py ${{ matrix.cmd }} --np 4 \
+            --workdir ../work --out ../out/$OUT
+      - name: Keep logs
+        if: always()
+        run: |
+          mkdir -p out/logs
+          find work -path "*/logs/*.log" -exec sh -c 'tail -200 "$1" > "out/logs/$(basename $(dirname $(dirname $1)))_$(basename $1)"' _ {} \; || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: "res-${{ matrix.id }}", path: out/ }
+
+  summary:
+    needs: cfd
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: part2-simulation }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install numpy
+      - uses: actions/download-artifact@v4
+        with: { pattern: "res-*", path: results }
+      - run: |
+          python part2-simulation/rnd/cfd_rnd.py summary --dir results --out SUMMARY.md --delta-mm 0.3
+          cat SUMMARY.md >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with: { name: SUMMARY, path: SUMMARY.md }

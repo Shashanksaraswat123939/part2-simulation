@@ -100,7 +100,23 @@ class OpenFOAMRunConfig:
     # lRef/Aref only affect the *coefficient* function object; raw force and
     # moment (what physics_contract consumes) are independent of them.
     reference_length_m: float = 1.0
-    turbulence_intensity: float = 0.05
+    # FREESTREAM TURBULENCE (changed 2026-09-25). The car runs through still
+    # air, so the oncoming flow is nearly laminar. The old inlet (I = 5 %,
+    # omega from a length scale equal to the car length) gave
+    # nut/nu ~ 10,500 at the car -- the freestream was ~10^4 times too viscous
+    # and every force was computed at an effective Re of order 30.
+    # Now: I = 0.5 % and omega set from a target viscosity ratio nut/nu.
+    # turbulent_viscosity_ratio=None restores the legacy length-scale formula
+    # (kept only so the two can be compared in rnd/cfd_rnd.py).
+    turbulence_intensity: float = 0.005
+    turbulent_viscosity_ratio: Optional[float] = 5.0
+    # FIXED MESHING FRAME. When set to ((x0,y0,z0),(x1,y1,z1)) in metres, the
+    # domain box, background cell size, locationInMesh and underbody box are
+    # derived from THESE bounds instead of from each STL's own bounding box.
+    # With the old behaviour a sub-micron change to the car moved every
+    # background cell, which is the likeliest source of the 1.2-3 % remesh
+    # spread. None keeps the legacy per-STL behaviour.
+    domain_reference_bounds: Optional[tuple] = None
     keep_run_dir: bool = False
 
     def __post_init__(self):
@@ -245,17 +261,42 @@ def turbulence_inlet_values(cfg: OpenFOAMRunConfig, ref_length_m: float) -> tupl
     """Return (k, omega, nut) inlet values for a k-omega SST run.
 
     k     = 1.5 (I * U)^2
-    omega = k^0.5 / (Cmu^0.25 * L)
-    nut   = k / omega   (a physical estimate; the field is calculated anyway)
+    omega = k / (r * nu)                 when turbulent_viscosity_ratio r is set
+          = k^0.5 / (Cmu^0.25 * L)       legacy (r is None): L = car length
+    nut   = k / omega
     """
     u = cfg.reference_speed_mps
     intensity = cfg.turbulence_intensity
-    length = max(ref_length_m, 1e-6)
     k = 1.5 * (intensity * u) ** 2
-    c_mu = 0.09
-    omega = math.sqrt(k) / (c_mu ** 0.25 * length)
+    ratio = getattr(cfg, "turbulent_viscosity_ratio", None)
+    if ratio is not None:
+        if ratio <= 0:
+            raise ValueError("turbulent_viscosity_ratio must be > 0")
+        omega = k / (ratio * cfg.kinematic_viscosity_m2s)
+    else:
+        length = max(ref_length_m, 1e-6)
+        omega = math.sqrt(k) / (0.09 ** 0.25 * length)
     nut = k / omega if omega > 0 else 0.0
     return k, omega, nut
+
+
+def meshing_bounds(stl_bounds_: tuple, cfg) -> tuple:
+    """Bounds that drive the domain, background mesh and locationInMesh.
+
+    The STL's own bounds unless cfg.domain_reference_bounds is set, in which
+    case the fixed frame is used and the STL must lie inside it.
+    """
+    ref = getattr(cfg, "domain_reference_bounds", None)
+    if ref is None:
+        return stl_bounds_
+    (x0, y0, z0), (x1, y1, z1) = stl_bounds_
+    (rx0, ry0, rz0), (rx1, ry1, rz1) = ref
+    tol = 1e-6
+    if x0 < rx0 - tol or y0 < ry0 - tol or z0 < rz0 - tol \
+            or x1 > rx1 + tol or y1 > ry1 + tol or z1 > rz1 + tol:
+        raise ValueError(
+            f"STL bounds {stl_bounds_} fall outside domain_reference_bounds {ref}")
+    return (tuple(ref[0]), tuple(ref[1]))
 
 
 # ---------------------------------------------------------------------------
@@ -987,7 +1028,7 @@ def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
     (run / "constant" / "triSurface").mkdir(parents=True, exist_ok=True)
     (run / "0").mkdir(parents=True, exist_ok=True)
 
-    bounds = stl_bounds(stl_path)
+    bounds = meshing_bounds(stl_bounds(stl_path), cfg)
     (x0, y0, z0), (x1, y1, z1) = bounds
     lx, ly, lz = (x1 - x0), (y1 - y0), (z1 - z0)
     ref_len = max(lx, 1e-4)
@@ -1324,7 +1365,9 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
         except ValueError:
             yp_min, yp_max = float("nan"), float("nan")
         result = {
-            "D20_half": abs(fx),
+            # fx, not abs(fx): a reversed or diverged solve must trip the
+            # D20 >= 0 guard in physics_contract instead of reading as drag.
+            "D20_half": fx,
             "L_half": fz,
             "A_half": meta["frontal_area_half"],
             "pitching_moment_half": my,

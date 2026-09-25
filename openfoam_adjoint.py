@@ -150,6 +150,11 @@ class AdjointRunConfig:
     # worst healthy case while catching the slow divergence at 307 m/s. Both
     # bounds are measured, not assumed.
     max_adjoint_velocity_ratio: float = 5.0
+    # Passed through to the primal fields and the meshing frame; see
+    # openfoam_case.OpenFOAMRunConfig for why both changed on 2026-09-25.
+    turbulence_intensity: float = 0.005
+    turbulent_viscosity_ratio: Optional[float] = 5.0
+    domain_reference_bounds: Optional[tuple] = None
 
     def __post_init__(self):
         if self.resolution not in oc.RESOLUTION_REFINEMENT:
@@ -176,6 +181,9 @@ class AdjointRunConfig:
             turbulence_model="kOmegaSST",
             resolution=self.resolution,
             n_subdomains=self.n_subdomains,
+            turbulence_intensity=self.turbulence_intensity,
+            turbulent_viscosity_ratio=self.turbulent_viscosity_ratio,
+            domain_reference_bounds=self.domain_reference_bounds,
         )
 
 
@@ -668,7 +676,7 @@ def build_adjoint_case(run_dir: str, stl_path: str, cfg: AdjointRunConfig) -> di
 
     forward_cfg = cfg.as_forward_config()
 
-    bounds = oc.stl_bounds(stl_path)
+    bounds = oc.meshing_bounds(oc.stl_bounds(stl_path), forward_cfg)
     (x0, y0, z0), (x1, y1, z1) = bounds
     ref_len = max(x1 - x0, 1e-4)
     frontal_area_half = oc.compute_frontal_area_half(stl_path)
