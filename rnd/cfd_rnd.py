@@ -128,6 +128,46 @@ SINK_M = 0.0003          # wheels sunk 0.3 mm into the track: finite contact lin
 R_WHEEL_M = 0.01413
 
 
+def _front_wing_parts(kind: str):
+    """Half-span front wing (y >= 0) for the wheel-shielding experiment.
+
+    NACA 0015 section, chord 20 mm (3 mm thick), LE at x = 6 mm, TE at 26 mm:
+    5.9 mm clear of the front wheel's leading edge (T7.9.1 asks 5 mm). Span to
+    y = 38.5 mm, past the wheel's outer face at 36.5. Bottom >= 5 mm above the
+    track (T8.7). Endplate 2 mm wide, 5-20 mm high (T8.5.3 <= 10 wide, T7.11
+    <= 20 high ahead of the wheel). Floats: no support, which T8.7 would need;
+    this is an aerodynamic experiment, not a legal part.
+      flat      chord line at z = 8 mm, 0 deg
+      endplate  flat + endplate
+      angled    chord line at z = 10 mm, trailing edge up 10 deg, + endplate
+    """
+    import trimesh
+    from shapely.geometry import Polygon
+    if kind == "none":
+        return []
+    c, t = 0.020, 0.15
+    xs = np.linspace(0, 1, 41)
+    yt = 5 * t * (0.2969 * np.sqrt(xs) - 0.1260 * xs - 0.3516 * xs**2
+                  + 0.2843 * xs**3 - 0.1036 * xs**4)
+    pts = [(x * c, yv * c) for x, yv in zip(xs, yt)] + \
+          [(x * c, -yv * c) for x, yv in zip(xs[::-1], yt[::-1])]
+    sec = Polygon(pts).buffer(0)
+    wing = trimesh.creation.extrude_polygon(sec, 0.0385)      # extrude along +z
+    # section plane (x, z_section) -> car (x, z); extrusion z -> car +y
+    wing.apply_transform(trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0]))
+    zc, aoa = (0.008, 0.0) if kind in ("flat", "endplate") else (0.010, np.radians(10))
+    if aoa:
+        wing.apply_transform(trimesh.transformations.rotation_matrix(
+            -aoa, [0, 1, 0], point=[0.25 * c, 0, 0]))
+    wing.apply_translation([0.006, 0.0, zc])
+    parts = [wing]
+    if kind in ("endplate", "angled"):
+        ep = trimesh.creation.box(extents=[0.020, 0.002, 0.015])
+        ep.apply_translation([0.016, 0.0395, 0.0125])
+        parts.append(ep)
+    return parts
+
+
 def cmd_hardware(a):
     """Right-side wheels, supports and halo for the leader's scalars.
 
@@ -168,6 +208,7 @@ def cmd_hardware(a):
         parts.append(hg.build_halo((xf - 16) / 1000, dh)["halo_right"])
     except Exception as exc:  # noqa: BLE001
         print(f"halo skipped: {exc}")
+    parts += _front_wing_parts(a.front_wing)
     hw_mesh = trimesh.util.concatenate(parts)
     _export_ascii(hw_mesh, out / "hardware.stl")
     (out / "hardware.json").write_text(json.dumps(meta, indent=2))
@@ -481,7 +522,31 @@ def cmd_summary(a):
             curv = (runs["M_plus"]["D20_half_N"] + runs["M_minus"]["D20_half_N"] - 2 * b) / abs(b)
             L.append(f"- Asymmetry (+δ and −δ about base, relative): {100*curv:+.3f} % "
                      "(large values mean the difference is noise-dominated, not linear).")
-    Path(a.out).write_text("\n".join(L) + "\n")
+    cs = list(d.rglob("sens_coarse.npz"))
+    if cs and all(k in runs for k in ("C_p1", "C_m1")):
+        z = np.load(cs[0])
+        dl = 1.0e-3
+        meas = (runs["C_p1"]["D20_half_N"] - runs["C_m1"]["D20_half_N"]) / (2 * dl)
+        pred = -RHO * float(np.sum(z["sens"] * z["area"]))
+        L += ["", "## Adjoint gain check, coarse, +/-1.0 mm (half car, N per metre outward)", "",
+              f"- measured {meas:.4e}; adjoint (per-area, outward = -patch normal) {pred:.4e}; "
+              f"ratio {meas/pred if pred else float('nan'):.3f}"]
+        if "C_base" in runs:
+            b = runs["C_base"]["D20_half_N"]
+            L.append(f"- base {2*b:.5f} N, +1 mm {2*runs['C_p1']['D20_half_N']:.5f}, "
+                     f"-1 mm {2*runs['C_m1']['D20_half_N']:.5f}; asymmetry "
+                     f"{100*(runs['C_p1']['D20_half_N']+runs['C_m1']['D20_half_N']-2*b)/b:+.2f} %")
+    wing = [k for k in ("W0_nowing", "W1_flat", "W2_endplate", "W3_angled") if k in runs]
+    if "W0_nowing" in wing:
+        b = runs["W0_nowing"]
+        L += ["", "## Front wing wheel-shielding (medium, rotating wheels)", "",
+              "| run | total N | wheels N | body N | supports+halo+wing N | vs no wing |", "|---|---|---|---|---|---|"]
+        for k in wing:
+            g = runs[k]["groups"]
+            L.append(f"| {k} | {2*runs[k]['D20_half_N']:.4f} | {2*g['wheels']['D_half_N']:.4f} | "
+                     f"{2*g['car']['D_half_N']:.4f} | {2*g['hardware']['D_half_N']:.4f} | "
+                     f"{100*(runs[k]['D20_half_N']/b['D20_half_N']-1):+.2f} % |")
+    Path(a.out).write_text("\n".join(L) + "\n", encoding="utf-8")
     print("\n".join(L))
 
 
@@ -505,6 +570,8 @@ def main():
     w.add_argument("--scale-x", type=float, default=1.0)
     h = sp.add_parser("hardware"); h.add_argument("--out-dir", required=True)
     h.add_argument("--part1", default=str(PART2.parent / "part1-simulation"))
+    h.add_argument("--front-wing", default="none",
+                   choices=("none", "flat", "endplate", "angled"))
     j = sp.add_parser("adjoint")
     j.add_argument("--stl", required=True); j.add_argument("--out", required=True)
     j.add_argument("--frame", choices=("stl", "fixed"), default="fixed")

@@ -67,6 +67,11 @@ jobs:
           python rnd/cfd_rnd.py inflate --stl ../fixture/car.stl --delta-mm 0.3  --out ../fixture/car_p.stl
           python rnd/cfd_rnd.py inflate --stl ../fixture/car.stl --delta-mm -0.3 --out ../fixture/car_m.stl
           python rnd/cfd_rnd.py hardware --out-dir ../fixture/hw
+          for k in flat endplate angled; do
+            python rnd/cfd_rnd.py hardware --out-dir ../fixture/hw_$k --front-wing $k
+          done
+          python rnd/cfd_rnd.py inflate --stl ../fixture/car.stl --delta-mm 1.0  --out ../fixture/car_p1.stl
+          python rnd/cfd_rnd.py inflate --stl ../fixture/car.stl --delta-mm -1.0 --out ../fixture/car_m1.stl
           for f in rnd/fixtures/*.stl.gz; do gunzip -c "$f" > ../fixture/$(basename "$f" .gz); done
           ls -la ../fixture
       - uses: actions/upload-artifact@v4
@@ -85,17 +90,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Round 2: lean bodies, wheels, shape noise, medium noise
-          - { id: L_baseline,       cmd: "forward --stl baseline_half.stl --res coarse" }
-          - { id: L_lead,           cmd: "forward --stl lead_half.stl --res coarse" }
-          - { id: L_tungsten,       cmd: "forward --stl tungsten_half.stl --res coarse" }
-          - { id: H1_static,        cmd: "forward --stl baseline_half.stl --res coarse --hardware hw --rotate 0" }
-          - { id: H2_rotating,      cmd: "forward --stl baseline_half.stl --res coarse --hardware hw --rotate 1" }
-          - { id: H3_lead_rotating, cmd: "forward --stl lead_half.stl --res coarse --hardware hw --rotate 1" }
-          - { id: S_stl_base,       cmd: "forward --stl baseline_half.stl --res coarse --frame stl" }
-          - { id: S_stl_scaled,     cmd: "forward --stl baseline_half.stl --res coarse --frame stl --scale-x 1.00001" }
-          - { id: S_fix_scaled,     cmd: "forward --stl baseline_half.stl --res coarse --scale-x 1.00001" }
-          - { id: M_shift,          cmd: "forward --stl car.stl --res medium --shift-um 1" }
+          # Round 3: front-wing wheel shielding, tungsten full car, coarse adjoint gain check
+          - { id: W0_nowing,        cmd: "forward --stl baseline_half.stl --res medium --hardware hw --rotate 1" }
+          - { id: W1_flat,          cmd: "forward --stl baseline_half.stl --res medium --hardware hw_flat --rotate 1" }
+          - { id: W2_endplate,      cmd: "forward --stl baseline_half.stl --res medium --hardware hw_endplate --rotate 1" }
+          - { id: W3_angled,        cmd: "forward --stl baseline_half.stl --res medium --hardware hw_angled --rotate 1" }
+          - { id: H4_tungsten_rot,  cmd: "forward --stl tungsten_half.stl --res coarse --hardware hw --rotate 1" }
+          - { id: C_base,           cmd: "forward --stl car.stl --res coarse" }
+          - { id: C_p1,             cmd: "forward --stl car_p1.stl --res coarse" }
+          - { id: C_m1,             cmd: "forward --stl car_m1.stl --res coarse" }
+          - { id: C_adj,            cmd: "adjoint --stl car.stl --res coarse", out: sens_coarse.npz }
     steps:
       - uses: actions/checkout@v4
         with: { path: part2-simulation }
