@@ -67,6 +67,10 @@ MAX_FORCE_MEAN_STDERR: float = 0.01
 # reports that. Tighten it once the case is steady.
 CONVERGENCE_RESIDUAL: float = 5e-3
 
+# Largest drift of the averaged streamwise force (|slope| x window / mean) for
+# which a solve counts as converged. See the drift gate in run_half_car_cfd.
+MAX_FORCE_DRIFT: float = 0.02
+
 
 @dataclass(frozen=True)
 class CFDHealthReport:
@@ -105,6 +109,9 @@ class CFDHealthReport:
     # If this dominates force_mean_stderr the solve has not settled and the
     # answer is more iterations -- averaging cannot fix a drifting signal.
     force_drift: Optional[float] = None
+    # Half-car force per patch when extra surfaces (wheels, wings, supports)
+    # are in the case: {patch: {"D_half_N", "L_half_N"}}. None for body-only.
+    patch_forces: Optional[dict] = None
 
 
 class CFDRunError(Exception):
@@ -201,6 +208,8 @@ def run_half_car_cfd(
     keep_run_dir: bool = False,
     stage_timeout_s: int = 7200,
     underbody_refinement_level: int = 1,
+    extra_surfaces: tuple = (),
+    domain_reference_bounds=None,
 ) -> tuple[HalfCarQuantities, CFDHealthReport]:
     """
     Validate a half-car STL and package OpenFOAM half-domain outputs.
@@ -251,6 +260,8 @@ def run_half_car_cfd(
         stage_timeout_s=stage_timeout_s,
         underbody_refinement_level=underbody_refinement_level,
         moment_reference_point_m=MOMENT_REFERENCE_POINT_M,
+        extra_surfaces=tuple(extra_surfaces or ()),
+        domain_reference_bounds=domain_reference_bounds,
     )
 
     case_dir = Path(__file__).resolve().parent / "cfd_case_template"
@@ -327,8 +338,14 @@ def run_half_car_cfd(
             f"needed to compute the error on the mean was not available.",
             RuntimeWarning, stacklevel=2,
         )
+    # DRIFT GATE (2026-09-25). Measured on GitHub Actions: a medium solve with
+    # a final residual of 1.7e-3 (passes the 5e-3 residual gate) was still
+    # drifting 9.2 % across its averaging window, and its D20 was 4.7 % off the
+    # neighbouring solves. Drift is what makes a single number unrepeatable, so
+    # it gates. Healthy solves measured 0.0-1.3 % drift.
+    drift_ok = force_drift is None or force_drift <= MAX_FORCE_DRIFT
     health = CFDHealthReport(
-        converged=residual_final <= CONVERGENCE_RESIDUAL,
+        converged=residual_final <= CONVERGENCE_RESIDUAL and drift_ok,
         residual_final=residual_final,
         negative_volume_cells=negative_volume_cells,
         y_plus_min=float(result["y_plus_min"]),
@@ -337,6 +354,7 @@ def run_half_car_cfd(
         force_oscillation=force_oscillation,
         force_mean_stderr=force_mean_stderr,
         force_drift=force_drift,
+        patch_forces=result.get("groups"),
     )
     return half, health
 
@@ -353,6 +371,8 @@ def run_half_car_adjoint(
     stage_timeout_s: int = 14400,
     underbody_refinement_level: int = 1,
     n_subdomains: int = 1,
+    extra_surfaces: tuple = (),
+    domain_reference_bounds=None,
     # None means "whatever AdjointRunConfig says", rather than restating it.
     #
     # This signature duplicated every one of the config's defaults and exactly
@@ -421,6 +441,8 @@ def run_half_car_adjoint(
         **({} if max_unmapped_fraction is None
            else {"max_unmapped_fraction": max_unmapped_fraction}),
         n_subdomains=n_subdomains,
+        extra_surfaces=tuple(extra_surfaces or ()),
+        domain_reference_bounds=domain_reference_bounds,
     )
     case_dir = Path(__file__).resolve().parent / "cfd_case_template"
 

@@ -155,6 +155,10 @@ class AdjointRunConfig:
     turbulence_intensity: float = 0.005
     turbulent_viscosity_ratio: Optional[float] = 5.0
     domain_reference_bounds: Optional[tuple] = None
+    # See openfoam_case.OpenFOAMRunConfig.extra_surfaces. They join the drag
+    # OBJECTIVE (the body adjoint then sees wheel/wing interference drag) but
+    # are not design patches: sensitivities are still reported on `car` only.
+    extra_surfaces: tuple = ()
 
     def __post_init__(self):
         if self.resolution not in oc.RESOLUTION_REFINEMENT:
@@ -184,6 +188,7 @@ class AdjointRunConfig:
             turbulence_intensity=self.turbulence_intensity,
             turbulent_viscosity_ratio=self.turbulent_viscosity_ratio,
             domain_reference_bounds=self.domain_reference_bounds,
+            extra_surfaces=self.extra_surfaces,
         )
 
 
@@ -334,6 +339,7 @@ def build_optimisation_dict(cfg: AdjointRunConfig, ref_area_half: float) -> str:
     # rho to reach newtons.
     aref = 2.0 / (u * u)
     del ref_area_half
+    objective_patches = " ".join(["car"] + [s["name"] for s in cfg.extra_surfaces])
     return oc._header("dictionary", "optimisationDict") + f"""
 optimisationManager singleRun;
 
@@ -383,7 +389,7 @@ adjointManagers
                         {{
                             weight     1.;
                             type       force;
-                            patches    (car);
+                            patches    ({objective_patches});
                             direction  (1 0 0);
                             Aref       {aref};
                             rhoInf     {rho};
@@ -676,7 +682,7 @@ def build_adjoint_case(run_dir: str, stl_path: str, cfg: AdjointRunConfig) -> di
 
     forward_cfg = cfg.as_forward_config()
 
-    bounds = oc.meshing_bounds(oc.stl_bounds(stl_path), forward_cfg)
+    bounds = oc.case_bounds(stl_path, forward_cfg)
     (x0, y0, z0), (x1, y1, z1) = bounds
     ref_len = max(x1 - x0, 1e-4)
     frontal_area_half = oc.compute_frontal_area_half(stl_path)
@@ -710,6 +716,9 @@ def build_adjoint_case(run_dir: str, stl_path: str, cfg: AdjointRunConfig) -> di
     oc._write_initial_fields(run / "0", forward_cfg, ref_len)
     # Adjoint fields (Ua, pa, ka, wa).
     _write_adjoint_fields(run / "0")
+    # Extra surfaces: snappy + every 0/ field (primal AND adjoint), no forces FOs
+    # (the adjoint controlDict has none).
+    oc.apply_extra_surfaces(run, forward_cfg, refinement, force_groups=False)
 
     return {
         "bounds": bounds,
@@ -752,6 +761,43 @@ def run_adjoint_stages(run_dir: str, cfg: AdjointRunConfig, bashrc: str,
 # ---------------------------------------------------------------------------
 # Sensitivity output discovery + parsing (pure, unit-tested against fixtures)
 # ---------------------------------------------------------------------------
+
+def _read_boundary(text: str) -> dict:
+    out = {}
+    for m in re.finditer(r"(\w+)\s*\{([^}]*)\}", text):
+        nf = re.search(r"nFaces\s+(\d+)", m.group(2))
+        sf = re.search(r"startFace\s+(\d+)", m.group(2))
+        if nf and sf:
+            out[m.group(1)] = (int(sf.group(1)), int(nf.group(1)))
+    return out
+
+
+def _read_faces(text: str, start: int, n: int) -> list:
+    """Faces start..start+n from an ASCII polyMesh/faces (faceList or faceCompactList)."""
+    if "faceCompactList" in text[:2000]:
+        lists = re.findall(r"\n(\d+)\s*\n\(\s*\n?([\d\s]*?)\n?\)", text)
+        offs = np.array(lists[0][1].split(), dtype=np.int64)
+        labs = np.array(lists[1][1].split(), dtype=np.int64)
+        return [labs[offs[i]:offs[i + 1]] for i in range(start, start + n)]
+    faces = re.findall(r"\d+\(([\d\s]+)\)", text)
+    return [np.array(f.split(), dtype=np.int64) for f in faces[start:start + n]]
+
+
+def car_patch_point_ids(run_dir: str, patch: str = "car"):
+    """Point labels on `patch`, or None if the mesh files are not ASCII-readable."""
+    poly = Path(run_dir) / "constant" / "polyMesh"
+    try:
+        bnd = _read_boundary((poly / "boundary").read_text(errors="replace"))
+        if patch not in bnd:
+            return None
+        start, n = bnd[patch]
+        faces = _read_faces((poly / "faces").read_text(errors="replace"), start, n)
+    except (OSError, ValueError, IndexError):
+        return None
+    if not faces:
+        return None
+    return np.unique(np.concatenate(faces))
+
 
 def find_sensitivity_file(run_dir: str) -> Path:
     """Locate the surfacePoints sensitivity output.
@@ -1071,6 +1117,13 @@ def invoke_adjoint(
         sens_points, sens_values = parse_sensitivity_points(
             sens_file.read_text(encoding="utf-8", errors="replace"), mesh_points
         )
+        # Map from `car` patch points ONLY. The field covers every mesh point,
+        # mostly interior zeros; an STL vertex near a sharp edge, the ground gap
+        # or the symmetry plane could snap to one of those and be silently
+        # frozen, inflating the "unmapped" share.
+        car_ids = car_patch_point_ids(run_dir)
+        if car_ids is not None and len(car_ids):
+            sens_points, sens_values = sens_points[car_ids], sens_values[car_ids]
         out = map_sensitivity_to_stl_vertices(
             stl_path, sens_points, sens_values,
             cfg.max_point_match_distance_m,

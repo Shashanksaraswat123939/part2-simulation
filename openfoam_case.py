@@ -117,6 +117,15 @@ class OpenFOAMRunConfig:
     # background cell, which is the likeliest source of the 1.2-3 % remesh
     # spread. None keeps the legacy per-STL behaviour.
     domain_reference_bounds: Optional[tuple] = None
+    # EXTRA SURFACES: the rest of the car. Each entry is a dict
+    #   {"name": str, "stl": path, "rotating": None | {"origin": (x,y,z),
+    #    "axis": (0,1,0), "omega": rad/s}}
+    # Each becomes its own wall patch (rotatingWallVelocity when "rotating" is
+    # given), is included in the total force, and gets its own force function
+    # object. Measured (rnd-cfd, 2026-09-25): wheels are 64-75 % of the car's
+    # drag, so a body-only case optimises the minority of the drag in a flow
+    # that does not exist on race day. Part 4 produces these surfaces.
+    extra_surfaces: tuple = ()
     keep_run_dir: bool = False
 
     def __post_init__(self):
@@ -1018,6 +1027,112 @@ def _normalise_solid_name(stl_path: str, dest: Path, solid_name: str = "car") ->
     dest.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
+def case_bounds(stl_path: str, cfg) -> tuple:
+    """Bounds that size the domain: the body PLUS every extra surface.
+
+    Sizing from the body alone put a front wing ahead of the nose (or a rear
+    wing above it) at the edge of, or outside, the refinement and domain.
+    """
+    (x0, y0, z0), (x1, y1, z1) = stl_bounds(stl_path)
+    for s in getattr(cfg, "extra_surfaces", ()) or ():
+        (a0, b0, c0), (a1, b1, c1) = stl_bounds(str(s["stl"]))
+        x0, y0, z0 = min(x0, a0), min(y0, b0), min(z0, c0)
+        x1, y1, z1 = max(x1, a1), max(y1, b1), max(z1, c1)
+    return meshing_bounds(((x0, max(y0, 0.0), max(z0, 0.0)), (x1, y1, z1)), cfg)
+
+
+def extra_surface_names(cfg) -> list:
+    return [s["name"] for s in getattr(cfg, "extra_surfaces", ()) or ()]
+
+
+def apply_extra_surfaces(run: Path, cfg, resolution_levels: tuple,
+                         force_groups: bool = True) -> None:
+    """Add cfg.extra_surfaces to an already-built case (forward or adjoint).
+
+    Edits the generated snappyHexMeshDict, surfaceFeatureExtractDict, every
+    0/ field (one boundary entry per new patch, copied from `car`, with
+    rotatingWallVelocity on rotating surfaces for U) and, for the forward case,
+    the forces function objects.
+    """
+    surfs = list(getattr(cfg, "extra_surfaces", ()) or ())
+    if not surfs:
+        return
+    run = Path(run)
+    names = [s["name"] for s in surfs]
+    for s in surfs:
+        if s["name"] == "car" or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", s["name"]):
+            raise ValueError(f"bad extra surface name {s['name']!r}")
+        _normalise_solid_name(str(s["stl"]), run / "constant" / "triSurface" / f"{s['name']}.stl",
+                              solid_name=s["name"])
+    lo, hi = resolution_levels
+    sd = run / "system" / "snappyHexMeshDict"
+    t = sd.read_text()
+    car_geom = '    car\n    {\n        type triSurfaceMesh;\n        file "car.stl";\n    }\n'
+    assert car_geom in t, "snappy geometry block changed"
+    t = t.replace(car_geom, car_geom + "".join(
+        f'    {n}\n    {{\n        type triSurfaceMesh;\n        file "{n}.stl";\n    }}\n'
+        for n in names))
+    rs = "    refinementSurfaces\n    {\n"
+    t = t.replace(rs, rs + "".join(
+        f"        {s['name']} {{ level ({lo} {hi + (1 if s.get('rotating') else 0)}); "
+        f"patchInfo {{ type wall; }} }}\n" for s in surfs))
+    feat = f'        {{ file "car.eMesh"; level {hi}; }}\n'
+    t = t.replace(feat, feat + "".join(f'        {{ file "{n}.eMesh"; level {hi}; }}\n'
+                                       for n in names))
+    t = t.replace('        "car.*"\n', '        "(car|' + "|".join(names) + ')"\n')
+    sd.write_text(t)
+    fe = run / "system" / "surfaceFeatureExtractDict"
+    fe.write_text(fe.read_text() + "".join(
+        _SURFACE_FEATURE_EXTRACT_BODY.replace("car.stl", f"{n}.stl") for n in names))
+    for f in sorted((run / "0").iterdir()):
+        if not f.is_file():
+            continue
+        lines = []
+        for ln in f.read_text().splitlines():
+            lines.append(ln)
+            m = re.match(r"^(\s*)car(\s+\{.*\})\s*$", ln)
+            if not m:
+                continue
+            for s in surfs:
+                entry = m.group(2)
+                rot = s.get("rotating")
+                if f.name == "U" and rot:
+                    ox, oy, oz = rot["origin"]
+                    ax = rot.get("axis", (0, 1, 0))
+                    entry = (f" {{ type rotatingWallVelocity; origin ({ox} {oy} {oz}); "
+                             f"axis ({ax[0]} {ax[1]} {ax[2]}); omega {rot['omega']}; "
+                             f"value uniform (0 0 0); }}")
+                lines.append(f"{m.group(1)}{s['name']}{entry}")
+        f.write_text("\n".join(lines) + "\n")
+    if not force_groups:
+        return
+    cd = run / "system" / "controlDict"
+    t = cd.read_text()
+    all_p = "car " + " ".join(names)
+    t = t.replace("patches         (car);", f"patches         ({all_p});")
+    extra = ""
+    for g, pats in [("car", "car")] + [(n, n) for n in names]:
+        extra += (f"    forces_{g}\n    {{\n        type            forces;\n"
+                  f'        libs            ("libforces.so");\n'
+                  f"        writeControl    timeStep;\n        writeInterval   1;\n"
+                  f"        patches         ({pats});\n        rho             rhoInf;\n"
+                  f"        rhoInf          {cfg.air_density_kgm3};\n"
+                  f"        CofR            (0 0 0);\n        log             false;\n    }}\n")
+    t = t.replace("    yPlus\n", extra + "    yPlus\n", 1)
+    cd.write_text(t)
+
+
+def read_group_forces(run_dir: str, cfg) -> dict:
+    """{patch: {"D_half_N", "L_half_N"}} for car + every extra surface."""
+    out = {}
+    for g in ["car"] + extra_surface_names(cfg):
+        f = _find_latest(Path(run_dir) / "postProcessing" / f"forces_{g}", ("force.dat",))
+        if f is not None:
+            fx, _fy, fz = parse_total_vector_dat(f.read_text(errors="replace"))
+            out[g] = {"D_half_N": fx, "L_half_N": fz}
+    return out
+
+
 def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
     """Generate a complete ESI case under run_dir for the given half-car STL.
     Returns a small metadata dict (bounds, frontal area, cell size)."""
@@ -1028,7 +1143,7 @@ def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
     (run / "constant" / "triSurface").mkdir(parents=True, exist_ok=True)
     (run / "0").mkdir(parents=True, exist_ok=True)
 
-    bounds = meshing_bounds(stl_bounds(stl_path), cfg)
+    bounds = case_bounds(stl_path, cfg)
     (x0, y0, z0), (x1, y1, z1) = bounds
     lx, ly, lz = (x1 - x0), (y1 - y0), (z1 - z0)
     ref_len = max(lx, 1e-4)
@@ -1060,6 +1175,7 @@ def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
     _write(run / "constant" / "turbulenceProperties", build_turbulence_properties(cfg))
 
     _write_initial_fields(run / "0", cfg, ref_len)
+    apply_extra_surfaces(run, cfg, refinement)
 
     return {
         "bounds": bounds,
@@ -1379,6 +1495,7 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
             "y_plus_min": yp_min,
             "y_plus_max": yp_max,
             "courant_max": courant,
+            "groups": read_group_forces(run_dir, cfg) if cfg.extra_surfaces else None,
         }
         succeeded = True
         return result
