@@ -73,6 +73,11 @@ jobs:
     needs: fixture
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    env:
+      # Hosted runners expose 4 vCPUs as hardware threads; OpenMPI counts
+      # physical cores by default and refuses -np 4 without these.
+      OMPI_MCA_hwloc_base_use_hwthreads_as_cpus: "1"
+      OMPI_MCA_rmaps_base_oversubscribe: "1"
     strategy:
       fail-fast: false
       matrix:
