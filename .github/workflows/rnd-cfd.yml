@@ -66,6 +66,9 @@ jobs:
           python rnd/cfd_rnd.py fixture --out ../fixture/car.stl
           python rnd/cfd_rnd.py inflate --stl ../fixture/car.stl --delta-mm 0.3  --out ../fixture/car_p.stl
           python rnd/cfd_rnd.py inflate --stl ../fixture/car.stl --delta-mm -0.3 --out ../fixture/car_m.stl
+          python rnd/cfd_rnd.py hardware --out-dir ../fixture/hw
+          for f in rnd/fixtures/*.stl.gz; do gunzip -c "$f" > ../fixture/$(basename "$f" .gz); done
+          ls -la ../fixture
       - uses: actions/upload-artifact@v4
         with: { name: fixture, path: fixture/ }
 
@@ -82,16 +85,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { id: F1_legacy_stl_base,   cmd: "forward --stl car.stl   --inlet legacy --frame stl   --shift-um 0 --res coarse" }
-          - { id: F2_legacy_stl_shift,  cmd: "forward --stl car.stl   --inlet legacy --frame stl   --shift-um 1 --res coarse" }
-          - { id: F3_fixed_stl_base,    cmd: "forward --stl car.stl   --inlet fixed  --frame stl   --shift-um 0 --res coarse" }
-          - { id: F4_fixed_stl_shift,   cmd: "forward --stl car.stl   --inlet fixed  --frame stl   --shift-um 1 --res coarse" }
-          - { id: F5_fixed_frame_base,  cmd: "forward --stl car.stl   --inlet fixed  --frame fixed --shift-um 0 --res coarse" }
-          - { id: F6_fixed_frame_shift, cmd: "forward --stl car.stl   --inlet fixed  --frame fixed --shift-um 1 --res coarse" }
-          - { id: M_base,               cmd: "forward --stl car.stl   --inlet fixed  --frame fixed --res medium" }
-          - { id: M_plus,               cmd: "forward --stl car_p.stl --inlet fixed  --frame fixed --res medium" }
-          - { id: M_minus,              cmd: "forward --stl car_m.stl --inlet fixed  --frame fixed --res medium" }
-          - { id: ADJ,                  cmd: "adjoint --stl car.stl   --frame fixed --res medium", out: sens.npz }
+          # Round 2: lean bodies, wheels, shape noise, medium noise
+          - { id: L_baseline,       cmd: "forward --stl baseline_half.stl --res coarse" }
+          - { id: L_lead,           cmd: "forward --stl lead_half.stl --res coarse" }
+          - { id: L_tungsten,       cmd: "forward --stl tungsten_half.stl --res coarse" }
+          - { id: H1_static,        cmd: "forward --stl baseline_half.stl --res coarse --hardware hw --rotate 0" }
+          - { id: H2_rotating,      cmd: "forward --stl baseline_half.stl --res coarse --hardware hw --rotate 1" }
+          - { id: H3_lead_rotating, cmd: "forward --stl lead_half.stl --res coarse --hardware hw --rotate 1" }
+          - { id: S_stl_base,       cmd: "forward --stl baseline_half.stl --res coarse --frame stl" }
+          - { id: S_stl_scaled,     cmd: "forward --stl baseline_half.stl --res coarse --frame stl --scale-x 1.00001" }
+          - { id: S_fix_scaled,     cmd: "forward --stl baseline_half.stl --res coarse --scale-x 1.00001" }
+          - { id: M_shift,          cmd: "forward --stl car.stl --res medium --shift-um 1" }
     steps:
       - uses: actions/checkout@v4
         with: { path: part2-simulation }
