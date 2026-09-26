@@ -447,7 +447,18 @@ def run_half_car_adjoint(
     case_dir = Path(__file__).resolve().parent / "cfd_case_template"
 
     try:
-        raw_sensitivity = openfoam_adjoint.invoke_adjoint(str(path), str(case_dir), cfg=run_config)
+        try:
+            raw_sensitivity = openfoam_adjoint.invoke_adjoint(str(path), str(case_dir), cfg=run_config)
+        except RuntimeError as exc:
+            # The fallback the ATC note in openfoam_adjoint names: `cancel`
+            # drops adjoint transpose convection, a small inconsistency against
+            # a gradient that is otherwise garbage.
+            if "DIVERGED" not in str(exc) or run_config.atc_model == "cancel":
+                raise
+            print(f"[adjoint] {str(exc)[:80]}... retrying with ATCModel cancel", flush=True)
+            from dataclasses import replace as _replace
+            run_config = _replace(run_config, atc_model="cancel")
+            raw_sensitivity = openfoam_adjoint.invoke_adjoint(str(path), str(case_dir), cfg=run_config)
     except openfoam_adjoint.oc.OpenFOAMNotFoundError as exc:
         raise CFDRunError(str(exc)) from exc
     except subprocess.CalledProcessError as exc:

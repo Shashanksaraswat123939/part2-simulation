@@ -150,6 +150,10 @@ class AdjointRunConfig:
     # worst healthy case while catching the slow divergence at 307 m/s. Both
     # bounds are measured, not assumed.
     max_adjoint_velocity_ratio: float = 5.0
+    # "standard" (smoothed, gradient-consistent) or "cancel". cfd_wrapper
+    # retries with "cancel" when the standard one diverges: with every part in
+    # the flow at medium it did, 3 of 3 (max|Ua| 1e59-1e86, 2026-09-26).
+    atc_model: str = "standard"
     # Passed through to the primal fields and the meshing frame; see
     # openfoam_case.OpenFOAMRunConfig for why both changed on 2026-09-25.
     turbulence_intensity: float = 0.005
@@ -447,7 +451,7 @@ adjointManagers
                 // geometry defeats smoothing.
                 ATCModel
                 {{
-                    ATCModel          standard;
+                    ATCModel          {cfg.atc_model};
                     extraConvection   0;
                     nSmooth           30;
                     zeroATCPatchTypes (wall patch);
