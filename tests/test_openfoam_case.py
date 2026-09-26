@@ -108,8 +108,40 @@ def test_turbulence_inlet_values_positive_and_formula():
     cfg = OpenFOAMRunConfig(turbulence_model="kOmegaSST", reference_speed_mps=20.0)
     k, omega, nut = oc.turbulence_inlet_values(cfg, ref_length_m=0.2)
     assert k > 0 and omega > 0 and nut > 0
-    # k = 1.5 (I U)^2 = 1.5 (0.05*20)^2 = 1.5
-    assert abs(k - 1.5) < 1e-9, k
+    # k = 1.5 (I U)^2 = 1.5 (0.005*20)^2 = 0.015
+    assert abs(k - 0.015) < 1e-12, k
+
+
+def test_freestream_eddy_viscosity_is_near_laminar():
+    """A car in still air sees an almost laminar freestream. The legacy inlet
+    (I=5 %, omega from the car length) gave nut/nu ~ 10,500 -- a freestream
+    four orders of magnitude too viscous. Guard the default against that."""
+    cfg = OpenFOAMRunConfig(turbulence_model="kOmegaSST", reference_speed_mps=20.0)
+    _k, _omega, nut = oc.turbulence_inlet_values(cfg, ref_length_m=0.233)
+    ratio = nut / cfg.kinematic_viscosity_m2s
+    assert ratio < 20.0, ratio
+    legacy = OpenFOAMRunConfig(turbulence_model="kOmegaSST", reference_speed_mps=20.0,
+                               turbulence_intensity=0.05, turbulent_viscosity_ratio=None)
+    _k, _omega, nut_legacy = oc.turbulence_inlet_values(legacy, ref_length_m=0.233)
+    assert nut_legacy / legacy.kinematic_viscosity_m2s > 5000.0
+
+
+def test_fixed_meshing_frame_ignores_stl_bounds():
+    """With domain_reference_bounds set, two STLs of different size get the
+    same meshing bounds, so the background mesh does not move between them."""
+    ref = ((0.0, 0.0, 0.0), (0.26, 0.0425, 0.065))
+    cfg = OpenFOAMRunConfig(domain_reference_bounds=ref)
+    a = oc.meshing_bounds(((0.01, 0.0, 0.0015), (0.20, 0.03, 0.05)), cfg)
+    b = oc.meshing_bounds(((0.0100001, 0.0, 0.0015), (0.2000003, 0.03, 0.05)), cfg)
+    assert a == b == ref
+    legacy = OpenFOAMRunConfig()
+    assert oc.meshing_bounds(((0.01, 0.0, 0.0015), (0.2, 0.03, 0.05)), legacy)[0][0] == 0.01
+    try:
+        oc.meshing_bounds(((0.0, 0.0, 0.0), (0.30, 0.03, 0.05)), cfg)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("STL outside the fixed frame must be rejected")
 
 
 def test_blockmesh_dict_has_symmetry_and_cell_counts():

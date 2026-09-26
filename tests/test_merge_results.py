@@ -17,6 +17,10 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 _P2 = _HERE.parent
 _ROOT = _P2.parent
+# merge_results.py lives in Part 5 (the design advisor owns ranking); fall back
+# to the workspace root where the original driver kept it.
+if (_ROOT / "part5-simulation" / "merge_results.py").exists():
+    _ROOT = _ROOT / "part5-simulation"
 sys.path.insert(0, str(_P2))
 
 from candidate_record import (CandidateRecord, read_candidate_record,  # noqa: E402

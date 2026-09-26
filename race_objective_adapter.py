@@ -247,7 +247,10 @@ def race_value_and_grad_guarded(param_vector, model):
     # Zero this term until ballast experiment provides real data and a real target.
     # ? UNRESOLVED: replace 0.0 with float(com_x_time_penalty(params_jax)) once
     # race_objective.py is re-locked with a measured target and correct k_x.
-    com_x_pen_raw = 0.0
+    # 2026-09-25: the term is still INSIDE T_penalized (race_time_seconds adds
+    # it), so zeroing only its subtraction left the fabricated penalty inside
+    # T_raw -- the number final ranking uses. Subtract it, so T_raw is physics.
+    com_x_pen_raw = float(com_x_time_penalty(params_jax))
 
     # NOTE: T_raw = T_penalized - tc*(com_h + com_x) is only correct because the
     # adapter guards time_coefficient == 1.0. If that guard is ever removed this

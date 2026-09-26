@@ -1,0 +1,307 @@
+{
+  "info": {
+    "frozen_frac": 0.1025562762304464,
+    "median_match_mm": 0.5606510501153951
+  },
+  "results": [
+    {
+      "variant": {
+        "name": "production (1 step)"
+      },
+      "dt": 1.795434082741251e-08,
+      "vmax_set_by": "nose",
+      "aero_rms_band": 514.643793496031,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.146831869483383,
+      "disp_median_mm": 0.04893542791251093,
+      "disp_p90_mm": 0.06186033169797156,
+      "disp_max_mm": 0.9822563079069369,
+      "frac_iface_moved_over_0p05mm": 0.39007656174871475,
+      "dmass_g": -1.3030149999999907,
+      "machinability_filled": 350,
+      "seconds": {
+        "reinit": 26.33,
+        "splat": 1.08,
+        "extend": 5.65,
+        "hj": 0.39,
+        "machinability": 0.12
+      }
+    },
+    {
+      "variant": {
+        "name": "aero only",
+        "w_mass": 0.0
+      },
+      "dt": 6.697933129780808e-08,
+      "vmax_set_by": "main_body",
+      "aero_rms_band": 514.643793496031,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.146831869483383,
+      "disp_median_mm": 0.006385846063494682,
+      "disp_p90_mm": 0.05718704778701067,
+      "disp_max_mm": 0.982592366199242,
+      "frac_iface_moved_over_0p05mm": 0.11672892702592744,
+      "dmass_g": -0.3633749999999991,
+      "machinability_filled": 8,
+      "seconds": {
+        "reinit": 19.94,
+        "splat": 1.11,
+        "extend": 5.36,
+        "hj": 0.35,
+        "machinability": 0.12
+      }
+    },
+    {
+      "variant": {
+        "name": "uniform density (nose not 6x)",
+        "uniform_density": true
+      },
+      "dt": 4.829196016507306e-08,
+      "vmax_set_by": "main_body",
+      "aero_rms_band": 514.643793496031,
+      "mass_rms_band": 2716.1732510742204,
+      "aero_share": 0.159292150064934,
+      "disp_median_mm": 0.1316022826358676,
+      "disp_p90_mm": 0.1637053646845743,
+      "disp_max_mm": 0.9822563079069369,
+      "frac_iface_moved_over_0p05mm": 0.9928061545289788,
+      "dmass_g": -2.2782579999999912,
+      "machinability_filled": 351,
+      "seconds": {
+        "reinit": 19.81,
+        "splat": 1.08,
+        "extend": 5.37,
+        "hj": 0.33,
+        "machinability": 0.12
+      }
+    },
+    {
+      "variant": {
+        "name": "band p90 dt",
+        "band_dt": 90
+      },
+      "dt": 3.241697465916115e-08,
+      "vmax_set_by": "nose",
+      "aero_rms_band": 514.643793496031,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.146831869483383,
+      "disp_median_mm": 0.08835399057716131,
+      "disp_p90_mm": 0.11169025128765497,
+      "disp_max_mm": 0.9822563079069369,
+      "frac_iface_moved_over_0p05mm": 0.9842992935606761,
+      "dmass_g": -2.2029379999999876,
+      "machinability_filled": 350,
+      "seconds": {
+        "reinit": 18.79,
+        "splat": 1.15,
+        "extend": 5.52,
+        "hj": 0.38,
+        "machinability": 0.12
+      }
+    },
+    {
+      "variant": {
+        "name": "smooth 2 mm",
+        "smooth_mm": 2.0
+      },
+      "dt": 1.795434082741251e-08,
+      "vmax_set_by": "nose",
+      "aero_rms_band": 300.5886066603443,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.09133844876406755,
+      "disp_median_mm": 0.04895381835012813,
+      "disp_p90_mm": 0.05909225221678582,
+      "disp_max_mm": 0.9822563079069369,
+      "frac_iface_moved_over_0p05mm": 0.3986389022450716,
+      "dmass_g": -1.3127949999999915,
+      "machinability_filled": 350,
+      "seconds": {
+        "reinit": 18.66,
+        "splat": 1.01,
+        "extend": 4.76,
+        "hj": 0.31,
+        "machinability": 0.1
+      }
+    },
+    {
+      "variant": {
+        "name": "smooth 2 mm + band p90 dt",
+        "smooth_mm": 2.0,
+        "band_dt": 90
+      },
+      "dt": 3.2957802160219306e-08,
+      "vmax_set_by": "nose",
+      "aero_rms_band": 300.5886066603443,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.09133844876406755,
+      "disp_median_mm": 0.08986184911918826,
+      "disp_p90_mm": 0.10847241940048491,
+      "disp_max_mm": 0.9822563079069369,
+      "frac_iface_moved_over_0p05mm": 0.9926951954728706,
+      "dmass_g": -2.20636099999999,
+      "machinability_filled": 350,
+      "seconds": {
+        "reinit": 17.53,
+        "splat": 0.88,
+        "extend": 4.74,
+        "hj": 0.33,
+        "machinability": 0.1
+      }
+    },
+    {
+      "variant": {
+        "name": "smooth 2 mm + band p90 dt + uniform density",
+        "smooth_mm": 2.0,
+        "band_dt": 90,
+        "uniform_density": true
+      },
+      "dt": 3.310747146557215e-08,
+      "vmax_set_by": "rearpod",
+      "aero_rms_band": 300.5886066603443,
+      "mass_rms_band": 2716.1732510742204,
+      "aero_share": 0.09963948791306686,
+      "disp_median_mm": 0.09024774772115052,
+      "disp_p90_mm": 0.10785811801525826,
+      "disp_max_mm": 0.9822563079069369,
+      "frac_iface_moved_over_0p05mm": 0.992861634057033,
+      "dmass_g": -2.170805999999997,
+      "machinability_filled": 350,
+      "seconds": {
+        "reinit": 18.44,
+        "splat": 0.89,
+        "extend": 4.99,
+        "hj": 0.33,
+        "machinability": 0.1
+      }
+    },
+    {
+      "variant": {
+        "name": "smooth + band dt + uniform density, 5 substeps",
+        "smooth_mm": 2.0,
+        "band_dt": 90,
+        "uniform_density": true,
+        "substeps": 5
+      },
+      "dt": 3.310747146557215e-08,
+      "vmax_set_by": "rearpod",
+      "aero_rms_band": 300.5886066603443,
+      "mass_rms_band": 2716.1732510742204,
+      "aero_share": 0.09963948791306686,
+      "disp_median_mm": 0.45096391113474965,
+      "disp_p90_mm": 0.5293727870594013,
+      "disp_max_mm": 1.4988990369602107,
+      "frac_iface_moved_over_0p05mm": 0.9997965750638015,
+      "dmass_g": -3.0985389999999837,
+      "machinability_filled": 351,
+      "seconds": {
+        "reinit": 18.59,
+        "splat": 0.78,
+        "extend": 4.85,
+        "hj": 1.83,
+        "machinability": 0.11
+      }
+    },
+    {
+      "variant": {
+        "name": "aero only, smooth 2 mm",
+        "w_mass": 0.0,
+        "smooth_mm": 2.0
+      },
+      "dt": 1.3451759761196172e-07,
+      "vmax_set_by": "main_body",
+      "aero_rms_band": 300.5886066603443,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.09133844876406755,
+      "disp_median_mm": 0.012019416317343712,
+      "disp_p90_mm": 0.08135343668982388,
+      "disp_max_mm": 0.982592366199242,
+      "frac_iface_moved_over_0p05mm": 0.19073861745016088,
+      "dmass_g": -0.42727099999999296,
+      "machinability_filled": 9,
+      "seconds": {
+        "reinit": 17.94,
+        "splat": 0.8,
+        "extend": 4.88,
+        "hj": 0.33,
+        "machinability": 0.12
+      }
+    },
+    {
+      "variant": {
+        "name": "aero only, smooth 2 mm, band p90 dt",
+        "w_mass": 0.0,
+        "smooth_mm": 2.0,
+        "band_dt": 90
+      },
+      "dt": 2.3696334991464113e-07,
+      "vmax_set_by": "nose",
+      "aero_rms_band": 300.5886066603443,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.09133844876406755,
+      "disp_median_mm": 0.021188054233789444,
+      "disp_p90_mm": 0.1436255988664925,
+      "disp_max_mm": 0.982592366199242,
+      "frac_iface_moved_over_0p05mm": 0.33139771424344416,
+      "dmass_g": -0.5301459999999952,
+      "machinability_filled": 20,
+      "seconds": {
+        "reinit": 19.41,
+        "splat": 1.17,
+        "extend": 5.61,
+        "hj": 0.41,
+        "machinability": 0.13
+      }
+    },
+    {
+      "variant": {
+        "name": "aero only, smooth 4 mm, band p90 dt",
+        "w_mass": 0.0,
+        "smooth_mm": 4.0,
+        "band_dt": 90
+      },
+      "dt": 3.3143687571712197e-07,
+      "vmax_set_by": "nose",
+      "aero_rms_band": 193.45438987269316,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.06076215089413605,
+      "disp_median_mm": 0.02386759524597437,
+      "disp_p90_mm": 0.13125455006957054,
+      "disp_max_mm": 0.982592366199242,
+      "frac_iface_moved_over_0p05mm": 0.33666826940858824,
+      "dmass_g": -0.4918149999999927,
+      "machinability_filled": 21,
+      "seconds": {
+        "reinit": 21.12,
+        "splat": 1.1,
+        "extend": 5.31,
+        "hj": 0.36,
+        "machinability": 0.12
+      }
+    },
+    {
+      "variant": {
+        "name": "aero only, raw, band p90 dt",
+        "w_mass": 0.0,
+        "band_dt": 90
+      },
+      "dt": 1.7448731615781947e-07,
+      "vmax_set_by": "nose",
+      "aero_rms_band": 514.643793496031,
+      "mass_rms_band": 2990.3432049448857,
+      "aero_share": 0.146831869483383,
+      "disp_median_mm": 0.016635720385238528,
+      "disp_p90_mm": 0.14901835238561037,
+      "disp_max_mm": 0.982592366199242,
+      "frac_iface_moved_over_0p05mm": 0.2946887598476162,
+      "dmass_g": -0.5261809999999867,
+      "machinability_filled": 17,
+      "seconds": {
+        "reinit": 20.99,
+        "splat": 1.25,
+        "extend": 6.84,
+        "hj": 0.4,
+        "machinability": 0.12
+      }
+    }
+  ]
+}

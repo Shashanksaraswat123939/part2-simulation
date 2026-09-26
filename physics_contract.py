@@ -68,6 +68,14 @@ TRACK_LENGTH_M: float = 20.0               # m, regulation race distance
 # later prefers the front axle or mid-wheelbase, change it here only.
 MOMENT_REFERENCE_POINT_M: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
+# One source for the two unmeasured objective inputs (2026-09-25). Callers used
+# mu 0.4 / 0.02 / 0.010 and wheel MOI 1e-6 / 1e-7 for the same car.
+#   DEFAULT_WHEEL_MOI_KG_M2: v2 CAD wheels, mean of front 125.0 and rear 153.0
+#       g.mm2 at ABS 1.04 g/cm3 (rnd/wheels). Part 4's designed wheel overrides.
+#   DEFAULT_ROLLING_MU: PLACEHOLDER. Replace with a coast-down fit.
+DEFAULT_WHEEL_MOI_KG_M2: float = 1.39e-7
+DEFAULT_ROLLING_MU: float = 0.010
+
 # time_coefficient is FROZEN. It must never be exposed as a callable
 # parameter anywhere in Part 2 (see Stage 6). Any code that needs it reads
 # this constant directly; nothing may accept it as a function argument.
