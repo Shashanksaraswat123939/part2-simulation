@@ -59,6 +59,12 @@ RESOLUTION_REFINEMENT: dict[str, tuple[int, int]] = {
     "fine": (4, 5),
 }
 
+# kOmegaSSTLM (Langtry-Menter gamma-ReTheta transition, 2026-09-30): at a
+# wheel Reynolds number of ~4e4 and a body Reynolds number of ~2.6e5 the real
+# boundary layers are largely laminar, which fully turbulent SST cannot show.
+# It needs y+ ~ 1, so it gets its own absolute prism-layer stack (layer_block).
+TURBULENCE_MODELS = ("laminar", "kOmegaSST", "kOmegaSSTLM")
+
 
 @dataclass(frozen=True)
 class OpenFOAMRunConfig:
@@ -127,13 +133,28 @@ class OpenFOAMRunConfig:
     # that does not exist on race day. Part 4 produces these surfaces.
     extra_surfaces: tuple = ()
     keep_run_dir: bool = False
+    # WALL TREATMENT (2026-09-30). Mean y+ was 8-10 on every patch of the
+    # start car -- the buffer layer, where nutkWallFunction switches between
+    # its viscous and log-law branches and is least accurate. Spalding's law
+    # is one continuous profile through the viscous, buffer and log regions,
+    # so it is valid at whatever y+ the prism layers happen to give.
+    # "k" restores nutkWallFunction (for comparison runs).
+    wall_function: str = "spalding"
+    # WAKE REFINEMENT (2026-09-30). Without it the cells grew from 0.57 mm on
+    # the wheels back to the 18 mm background within a few cells of the car,
+    # so the wake (base pressure, i.e. most of the drag of a bluff car) was
+    # barely resolved, and the medium-vs-fine study only ever refined the
+    # surfaces. See wake_boxes().
+    wake_refinement: bool = True
 
     def __post_init__(self):
-        if self.turbulence_model not in ("laminar", "kOmegaSST"):
+        if self.turbulence_model not in TURBULENCE_MODELS:
             raise ValueError(
-                f"turbulence_model must be 'laminar' or 'kOmegaSST', "
+                f"turbulence_model must be one of {TURBULENCE_MODELS}, "
                 f"got {self.turbulence_model!r}"
             )
+        if self.wall_function not in ("spalding", "k"):
+            raise ValueError(f"wall_function must be 'spalding' or 'k', got {self.wall_function!r}")
         if self.resolution not in RESOLUTION_REFINEMENT:
             raise ValueError(
                 f"resolution must be one of {sorted(RESOLUTION_REFINEMENT)}, "
@@ -375,6 +396,22 @@ def underbody_box(
     return ((x0 - margin, 0.0, -margin), (x1 + margin, y1 + margin, z_top))
 
 
+def wake_boxes(bounds, surface_min_level: int) -> tuple:
+    """(name, (min, max), level) refinement boxes for the car and its wake.
+
+    near: the car plus one car length behind it, 25 % wider and taller, at the
+          surface MIN level (the body's own cell size), so the separated flow
+          off the wheels, halo and tail is carried at the size it is shed at.
+    far:  three more car lengths, 50 % wider, twice as tall, one level coarser.
+    Both start at the track (z = 0): the wheel wakes run along it.
+    """
+    (x0, _y0, _z0), (x1, y1, z1) = bounds
+    lx = max(x1 - x0, 1e-6)
+    near = ((x0 - 0.05 * lx, 0.0, -0.01 * lx), (x1 + 1.0 * lx, 1.25 * y1, 1.25 * z1))
+    far = ((x1, 0.0, -0.01 * lx), (x1 + 4.0 * lx, 1.5 * y1, 2.0 * z1))
+    return (("wakeNear", near, surface_min_level), ("wakeFar", far, surface_min_level - 1))
+
+
 def location_in_mesh(
     bounds: tuple[tuple[float, float, float], tuple[float, float, float]]
 ) -> tuple[float, float, float]:
@@ -487,7 +524,12 @@ def build_snappy_dict(
     add_layers: bool,
     underbody: Optional[tuple[tuple[float, float, float], tuple[float, float, float]]] = None,
     underbody_extra_levels: int = 1,
+    boxes: tuple = (),
+    resolved_wall: bool = False,
 ) -> str:
+    """boxes: extra (name, (min, max), level) refinement boxes (wake_boxes).
+    resolved_wall: prism layers sized for y+ ~ 1 (transition model) instead
+    of the wall-function stack."""
     lo, hi = refinement
     underbody_geometry = ""
     underbody_region = ""
@@ -504,6 +546,20 @@ def build_snappy_dict(
         underbody_region = (
             f"underbody {{ mode inside; levels ((1e15 {hi + underbody_extra_levels})); }}"
         )
+    for name, ((bx0, by0, bz0), (bx1, by1, bz1)), level in boxes:
+        underbody_geometry += (f"    {name}\n    {{\n        type searchableBox;\n"
+                               f"        min  ({bx0} {by0} {bz0});\n"
+                               f"        max  ({bx1} {by1} {bz1});\n    }}\n")
+        underbody_region += f" {name} {{ mode inside; levels ((1e15 {level})); }}"
+    # Wall-function stack: 3 layers relative to the surface cell. Resolved
+    # stack (y+ ~ 1 at 20 m/s): first cell 20 um, 12 layers x 1.2 = 0.79 mm.
+    sizes = ("""    relativeSizes true;
+    expansionRatio 1.2;
+    finalLayerThickness 0.5;
+    minThickness 0.05;""" if not resolved_wall else """    relativeSizes false;
+    expansionRatio 1.2;
+    firstLayerThickness 2e-05;
+    minThickness 1e-06;""")
     layers_block = ""
     if add_layers:
         layers_block = f"""
@@ -511,13 +567,10 @@ def build_snappy_dict(
     {{
         "car.*"
         {{
-            nSurfaceLayers 3;
+            nSurfaceLayers {12 if resolved_wall else 3};
         }}
     }}
-    relativeSizes true;
-    expansionRatio 1.2;
-    finalLayerThickness 0.5;
-    minThickness 0.05;
+{sizes}
     nGrow 0;
     featureAngle 120;
     nRelaxIter 5;
@@ -703,15 +756,15 @@ def build_turbulence_properties(cfg: OpenFOAMRunConfig) -> str:
         return _header("dictionary", "turbulenceProperties") + """
 simulationType  laminar;
 """
-    return _header("dictionary", "turbulenceProperties") + """
+    return _header("dictionary", "turbulenceProperties") + f"""
 simulationType  RAS;
 
 RAS
-{
-    RASModel        kOmegaSST;
+{{
+    RASModel        {cfg.turbulence_model};
     turbulence      on;
     printCoeffs     on;
-}
+}}
 """
 
 
@@ -1156,14 +1209,16 @@ def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
 
     _normalise_solid_name(stl_path, run / "constant" / "triSurface" / "car.stl")
 
-    add_layers = cfg.turbulence_model == "kOmegaSST"
+    add_layers = cfg.turbulence_model != "laminar"
     refinement = RESOLUTION_REFINEMENT[cfg.resolution]
 
     _write(run / "system" / "blockMeshDict", build_blockmesh_dict(box_min, box_max, cell_size))
     _write(run / "system" / "snappyHexMeshDict",
            build_snappy_dict("car.stl", loc, refinement, add_layers,
                              underbody=underbody_box(bounds),
-                             underbody_extra_levels=cfg.underbody_refinement_level))
+                             underbody_extra_levels=cfg.underbody_refinement_level,
+                             boxes=wake_boxes(bounds, refinement[0]) if cfg.wake_refinement else (),
+                             resolved_wall=cfg.turbulence_model == "kOmegaSSTLM"))
     _write(run / "system" / "controlDict", build_control_dict(cfg, frontal_area_half))
     _write(run / "system" / "fvSchemes", _FV_SCHEMES)
     _write(run / "system" / "fvSolution", _FV_SOLUTION)
@@ -1222,9 +1277,10 @@ boundaryField
     car         { type zeroGradient; }
 }
 """)
-    if cfg.turbulence_model != "kOmegaSST":
+    if cfg.turbulence_model == "laminar":
         return
     k, omega, nut = turbulence_inlet_values(cfg, ref_len)
+    nut_wall = "nutUSpaldingWallFunction" if cfg.wall_function == "spalding" else "nutkWallFunction"
     _write(zero_dir / "k", _header("volScalarField", "k") + f"""
 dimensions      [0 2 -2 0 0 0 0];
 internalField   uniform {k};
@@ -1263,8 +1319,29 @@ boundaryField
     symmetry    {{ type symmetryPlane; }}
     outer       {{ type calculated; value uniform {nut}; }}
     upperWall   {{ type calculated; value uniform {nut}; }}
-    lowerWall   {{ type nutkWallFunction; value uniform 0; }}
-    car         {{ type nutkWallFunction; value uniform 0; }}
+    lowerWall   {{ type {nut_wall}; value uniform 0; }}
+    car         {{ type {nut_wall}; value uniform 0; }}
+}}
+""")
+    if cfg.turbulence_model != "kOmegaSSTLM":
+        return
+    # Langtry-Menter inlet: Re_theta_t from the freestream turbulence
+    # (Tu <= 1.3 %, Tu in percent); intermittency 1 in the freestream.
+    tu = 100.0 * cfg.turbulence_intensity
+    re_tt = 1173.51 - 589.428 * tu + 0.2196 / tu ** 2
+    for name, val in (("ReThetat", re_tt), ("gammaInt", 1.0)):
+        _write(zero_dir / name, _header("volScalarField", name) + f"""
+dimensions      [0 0 0 0 0 0 0];
+internalField   uniform {val};
+boundaryField
+{{
+    inlet       {{ type fixedValue; value uniform {val}; }}
+    outlet      {{ type inletOutlet; inletValue uniform {val}; value uniform {val}; }}
+    symmetry    {{ type symmetryPlane; }}
+    outer       {{ type zeroGradient; }}
+    upperWall   {{ type zeroGradient; }}
+    lowerWall   {{ type zeroGradient; }}
+    car         {{ type zeroGradient; }}
 }}
 """)
 
@@ -1523,6 +1600,8 @@ divSchemes
     div(phi,U)      bounded Gauss linearUpwind grad(U);
     div(phi,k)      bounded Gauss upwind;
     div(phi,omega)  bounded Gauss upwind;
+    div(phi,ReThetat) bounded Gauss upwind;
+    div(phi,gammaInt) bounded Gauss upwind;
     div((nuEff*dev2(T(grad(U))))) Gauss linear;
 }
 laplacianSchemes { default Gauss linear corrected; }
@@ -1541,7 +1620,7 @@ solvers
         relTol          0.01;
         smoother        GaussSeidel;
     }
-    "(U|k|omega)"
+    "(U|k|omega|ReThetat|gammaInt)"
     {
         solver          smoothSolver;
         smoother        symGaussSeidel;
@@ -1558,7 +1637,7 @@ SIMPLE
     {
         p               1e-4;
         U               1e-4;
-        "(k|omega)"     1e-4;
+        "(k|omega|ReThetat|gammaInt)" 1e-4;
     }
 }
 
@@ -1567,7 +1646,7 @@ relaxationFactors
     equations
     {
         U               0.9;
-        "(k|omega)"     0.7;
+        "(k|omega|ReThetat|gammaInt)" 0.7;
     }
 }
 """

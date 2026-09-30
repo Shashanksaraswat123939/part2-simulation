@@ -486,19 +486,6 @@ def test_invoke_raises_when_openfoam_absent():
         Path(stl).unlink(missing_ok=True)
 
 
-if __name__ == "__main__":
-    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
-    passed, failed = 0, 0
-    for name in fns:
-        try:
-            globals()[name]()
-            print("PASS", name)
-            passed += 1
-        except Exception as e:  # noqa: BLE001
-            print("FAIL", name, "->", repr(e))
-            failed += 1
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)
 
 
 def test_peak_to_peak_ranks_solve_quality_backwards_and_stderr_does_not():
@@ -561,3 +548,59 @@ def test_peak_to_peak_ranks_solve_quality_backwards_and_stderr_does_not():
     # Too few samples must read as "unknown", never as "converged".
     short_se, short_dr = force_mean_convergence(_dat([7.0, 7.1]))
     assert short_se == float("inf") and short_dr == float("inf")
+
+
+def test_default_model_uses_spalding_wall_function_and_wake_boxes():
+    stl = _write_stl(_PANELS)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "run"
+            oc.build_case(str(run), stl, OpenFOAMRunConfig())
+            nut = (run / "0" / "nut").read_text()
+            assert "nutUSpaldingWallFunction" in nut and "nutkWallFunction" not in nut
+            snappy = (run / "system" / "snappyHexMeshDict").read_text()
+            assert "wakeNear" in snappy and "wakeFar" in snappy
+            legacy = Path(d) / "legacy"
+            oc.build_case(str(legacy), stl, OpenFOAMRunConfig(wall_function="k", wake_refinement=False))
+            assert "nutkWallFunction" in (legacy / "0" / "nut").read_text()
+            assert "wakeNear" not in (legacy / "system" / "snappyHexMeshDict").read_text()
+    finally:
+        Path(stl).unlink(missing_ok=True)
+
+
+def test_transition_model_writes_its_fields_and_a_resolved_layer_stack():
+    stl = _write_stl(_PANELS)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "run"
+            oc.build_case(str(run), stl, OpenFOAMRunConfig(turbulence_model="kOmegaSSTLM"))
+            for f in ("ReThetat", "gammaInt"):
+                assert (run / "0" / f).is_file()
+            assert "kOmegaSSTLM" in (run / "constant" / "turbulenceProperties").read_text()
+            snappy = (run / "system" / "snappyHexMeshDict").read_text()
+            assert "firstLayerThickness 2e-05" in snappy and "nSurfaceLayers 12" in snappy
+            assert "div(phi,ReThetat)" in (run / "system" / "fvSchemes").read_text()
+    finally:
+        Path(stl).unlink(missing_ok=True)
+
+
+def test_wake_boxes_run_behind_the_car_from_the_track():
+    near, far = oc.wake_boxes(((0.0, 0.0, 0.002), (0.25, 0.04, 0.065)), 3)
+    assert near[2] == 3 and far[2] == 2
+    assert near[1][1][0] >= 0.25 + 0.25 and far[1][1][0] >= 0.25 + 1.0
+    assert near[1][0][2] <= 0.0 and far[1][0][2] <= 0.0
+
+
+if __name__ == "__main__":
+    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
+    passed, failed = 0, 0
+    for name in fns:
+        try:
+            globals()[name]()
+            print("PASS", name)
+            passed += 1
+        except Exception as e:  # noqa: BLE001
+            print("FAIL", name, "->", repr(e))
+            failed += 1
+    print(f"\n{passed} passed, {failed} failed")
+    sys.exit(1 if failed else 0)
