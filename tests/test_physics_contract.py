@@ -12,14 +12,9 @@ from physics_contract import (
     HalfCarQuantities,
     gcm3_to_kgm3,
     grams_to_kg,
-    kg_to_grams,
     m_to_mm,
     mm_to_m,
 )
-
-
-def test_grams_kg_round_trip():
-    assert math.isclose(kg_to_grams(grams_to_kg(23.0)), 23.0)
 
 
 def test_mm_m_round_trip():
@@ -118,8 +113,6 @@ def test_custom_q_ref_is_used_in_to_full_car():
     )
 
 
-
-
 def test_constants_defined_twice_still_agree():
     """Four physical constants have two independent definitions each.
 
@@ -158,20 +151,3 @@ def test_constants_defined_twice_still_agree():
             f"{label} is defined twice and the two disagree: {a} vs {b}. "
             f"Whichever is wrong, something is solving a different problem "
             f"than something else.")
-
-
-if __name__ == "__main__":
-    # Collected by name; a hand-written call list silently drops every test
-    # appended after it, which has already hidden several tests in this repo.
-    _mod = sys.modules[__name__]
-    _passed = _failed = 0
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        try:
-            getattr(_mod, _n)()
-            print("PASS " + _n)
-            _passed += 1
-        except Exception as _e:  # noqa: BLE001
-            print("FAIL %s: %r" % (_n, _e))
-            _failed += 1
-    print("%d passed, %d failed" % (_passed, _failed))
-    sys.exit(1 if _failed else 0)

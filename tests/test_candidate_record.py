@@ -287,19 +287,6 @@ def test_the_record_carries_every_cfd_number_the_pipeline_measured():
     assert back.mass_report.components == ()
 
 
-if __name__ == "__main__":
-    import sys
-    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
-    passed, failed = 0, 0
-    for f in fns:
-        try:
-            globals()[f]()
-            print("PASS", f); passed += 1
-        except Exception as e:
-            print("FAIL", f, "->", e); failed += 1
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)
-
 
 def test_serialiser_follows_the_dataclass_instead_of_a_hand_written_list():
     """A field added upstream must reach disk without editing this file.

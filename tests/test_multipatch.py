@@ -96,14 +96,3 @@ def test_drift_fails_convergence():
                 assert health.converged is ok, (drift, health)
         finally:
             cw._invoke_openfoam_pipeline = orig
-
-if __name__ == "__main__":
-    _mod = sys.modules[__name__]
-    _fails = 0
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        try:
-            getattr(_mod, _n)(); print("PASS", _n)
-        except Exception as e:  # noqa: BLE001
-            _fails += 1; print("FAIL", _n, "->", repr(e))
-    print(f"{_fails} failed")
-    sys.exit(1 if _fails else 0)

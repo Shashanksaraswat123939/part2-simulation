@@ -227,7 +227,7 @@ def run_half_car_cfd(
         air_density_kgm3: air density in kg/m^3. Honored (sets rhoInf and the
             kinematic viscosity nu = mu_air / rho).
         max_iterations: steady solver iteration cap (controlDict endTime).
-        turbulence_model: "laminar", "kOmegaSST" (default) or "kOmegaSSTLM"
+        turbulence_model: "kOmegaSST" (default) or "kOmegaSSTLM"
             (transition; y+ ~ 1 prism layers).
         wall_function, wake_refinement, wall_resolved, first_layer_m,
         layer_overrides, wake_level: see OpenFOAMRunConfig. resolution

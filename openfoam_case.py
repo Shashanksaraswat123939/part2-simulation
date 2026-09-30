@@ -66,7 +66,7 @@ RESOLUTION_REFINEMENT: dict[str, tuple[int, int]] = {
 # wheel Reynolds number of ~4e4 and a body Reynolds number of ~2.6e5 the real
 # boundary layers are largely laminar, which fully turbulent SST cannot show.
 # It needs y+ ~ 1, so it gets its own absolute prism-layer stack (layer_block).
-TURBULENCE_MODELS = ("laminar", "kOmegaSST", "kOmegaSSTLM")
+TURBULENCE_MODELS = ("kOmegaSST", "kOmegaSSTLM")
 
 
 @dataclass(frozen=True)
@@ -115,10 +115,8 @@ class OpenFOAMRunConfig:
     # nut/nu ~ 10,500 at the car -- the freestream was ~10^4 times too viscous
     # and every force was computed at an effective Re of order 30.
     # Now: I = 0.5 % and omega set from a target viscosity ratio nut/nu.
-    # turbulent_viscosity_ratio=None restores the legacy length-scale formula
-    # (kept only so the two can be compared in rnd/cfd_rnd.py).
     turbulence_intensity: float = 0.005
-    turbulent_viscosity_ratio: Optional[float] = 5.0
+    turbulent_viscosity_ratio: float = 5.0
     # FIXED MESHING FRAME. When set to ((x0,y0,z0),(x1,y1,z1)) in metres, the
     # domain box, background cell size, locationInMesh and underbody box are
     # derived from THESE bounds instead of from each STL's own bounding box.
@@ -310,23 +308,14 @@ def turbulence_inlet_values(cfg: OpenFOAMRunConfig, ref_length_m: float) -> tupl
     """Return (k, omega, nut) inlet values for a k-omega SST run.
 
     k     = 1.5 (I * U)^2
-    omega = k / (r * nu)                 when turbulent_viscosity_ratio r is set
-          = k^0.5 / (Cmu^0.25 * L)       legacy (r is None): L = car length
+    omega = k / (r * nu)       r = turbulent_viscosity_ratio
     nut   = k / omega
     """
-    u = cfg.reference_speed_mps
-    intensity = cfg.turbulence_intensity
-    k = 1.5 * (intensity * u) ** 2
-    ratio = getattr(cfg, "turbulent_viscosity_ratio", None)
-    if ratio is not None:
-        if ratio <= 0:
-            raise ValueError("turbulent_viscosity_ratio must be > 0")
-        omega = k / (ratio * cfg.kinematic_viscosity_m2s)
-    else:
-        length = max(ref_length_m, 1e-6)
-        omega = math.sqrt(k) / (0.09 ** 0.25 * length)
-    nut = k / omega if omega > 0 else 0.0
-    return k, omega, nut
+    k = 1.5 * (cfg.turbulence_intensity * cfg.reference_speed_mps) ** 2
+    if cfg.turbulent_viscosity_ratio <= 0:
+        raise ValueError("turbulent_viscosity_ratio must be > 0")
+    omega = k / (cfg.turbulent_viscosity_ratio * cfg.kinematic_viscosity_m2s)
+    return k, omega, k / omega
 
 
 def meshing_bounds(stl_bounds_: tuple, cfg) -> tuple:
@@ -782,10 +771,6 @@ nu              {cfg.kinematic_viscosity_m2s};
 
 
 def build_turbulence_properties(cfg: OpenFOAMRunConfig) -> str:
-    if cfg.turbulence_model == "laminar":
-        return _header("dictionary", "turbulenceProperties") + """
-simulationType  laminar;
-"""
     return _header("dictionary", "turbulenceProperties") + f"""
 simulationType  RAS;
 
@@ -1240,7 +1225,7 @@ def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
 
     _normalise_solid_name(stl_path, run / "constant" / "triSurface" / "car.stl")
 
-    add_layers = cfg.turbulence_model != "laminar"
+    add_layers = True
     refinement = RESOLUTION_REFINEMENT[cfg.resolution]
     wake_level = cfg.wake_level if cfg.wake_level is not None else min(refinement[0], 4)
     layer_controls = None
@@ -1317,8 +1302,6 @@ boundaryField
     car         { type zeroGradient; }
 }
 """)
-    if cfg.turbulence_model == "laminar":
-        return
     k, omega, nut = turbulence_inlet_values(cfg, ref_len)
     nut_wall = "nutUSpaldingWallFunction" if cfg.wall_function == "spalding" else "nutkWallFunction"
     # resolved walls: k goes to zero at the wall (kLowRe blends by y+, so the

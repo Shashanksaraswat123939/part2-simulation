@@ -120,10 +120,6 @@ def test_freestream_eddy_viscosity_is_near_laminar():
     _k, _omega, nut = oc.turbulence_inlet_values(cfg, ref_length_m=0.233)
     ratio = nut / cfg.kinematic_viscosity_m2s
     assert ratio < 20.0, ratio
-    legacy = OpenFOAMRunConfig(turbulence_model="kOmegaSST", reference_speed_mps=20.0,
-                               turbulence_intensity=0.05, turbulent_viscosity_ratio=None)
-    _k, _omega, nut_legacy = oc.turbulence_inlet_values(legacy, ref_length_m=0.233)
-    assert nut_legacy / legacy.kinematic_viscosity_m2s > 5000.0
 
 
 def test_fixed_meshing_frame_ignores_stl_bounds():
@@ -241,9 +237,7 @@ def test_surface_feature_extract_dict_matches_esi_contract():
 
 
 def test_transport_and_turbulence_properties():
-    lam = oc.build_turbulence_properties(OpenFOAMRunConfig(turbulence_model="laminar"))
     sst = oc.build_turbulence_properties(OpenFOAMRunConfig(turbulence_model="kOmegaSST"))
-    assert "laminar" in lam
     assert "kOmegaSST" in sst and "RAS" in sst
     tp = oc.build_transport_properties(OpenFOAMRunConfig(air_density_kgm3=1.225))
     assert "nu" in tp and "Newtonian" in tp
@@ -429,18 +423,6 @@ def test_build_case_generates_expected_files():
             # STL solid renamed to 'car' so the snappy patch name is deterministic.
             assert "solid car" in (run / "constant/triSurface/car.stl").read_text()
             assert abs(meta["frontal_area_half"] - 1.0) < 1e-9
-    finally:
-        Path(stl).unlink(missing_ok=True)
-
-
-def test_laminar_case_has_no_turbulence_fields():
-    stl = _write_stl(_PANELS)
-    try:
-        with tempfile.TemporaryDirectory() as d:
-            run_dir = str(Path(d) / "run")
-            oc.build_case(run_dir, stl, OpenFOAMRunConfig(turbulence_model="laminar"))
-            assert not (Path(run_dir) / "0" / "k").exists()
-            assert not (Path(run_dir) / "0" / "nut").exists()
     finally:
         Path(stl).unlink(missing_ok=True)
 
@@ -636,18 +618,3 @@ def test_wake_boxes_run_behind_the_car_from_the_track():
     assert near[2] == 3 and far[2] == 2
     assert near[1][1][0] >= 0.25 + 0.25 and far[1][1][0] >= 0.25 + 1.0
     assert near[1][0][2] <= 0.0 and far[1][0][2] <= 0.0
-
-
-if __name__ == "__main__":
-    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
-    passed, failed = 0, 0
-    for name in fns:
-        try:
-            globals()[name]()
-            print("PASS", name)
-            passed += 1
-        except Exception as e:  # noqa: BLE001
-            print("FAIL", name, "->", repr(e))
-            failed += 1
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)

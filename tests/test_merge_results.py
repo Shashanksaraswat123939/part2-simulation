@@ -186,15 +186,3 @@ def test_ranking_uses_T_penalized_and_drops_underweight_cars():
     assert "EXCLUDED" in r.stdout and "underweight" in r.stdout, (
         f"exclusion must be reported, not silent:\n{r.stdout}")
     assert "45.97" in r.stdout, "the excluded car's mass should be shown"
-
-
-if __name__ == "__main__":
-    # Collected BY NAME. The hand-written call list this replaces skipped every
-    # test appended below it -- which is exactly what happened to
-    # test_ranking_uses_T_penalized_and_drops_underweight_cars, and what
-    # test_no_test_file_silently_skips_its_own_tests exists to catch.
-    _mod = sys.modules[__name__]
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        _run(getattr(_mod, _n))
-    print(f"\n{_passed} passed, {_failed} failed")
-    sys.exit(1 if _failed else 0)

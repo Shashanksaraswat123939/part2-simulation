@@ -161,17 +161,3 @@ def test_binary_stl_rejected_with_clear_error():
         raise AssertionError("Expected CFDRunError for binary STL")
     finally:
         Path(f.name).unlink(missing_ok=True)
-
-
-if __name__ == "__main__":
-    import sys
-    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
-    passed, failed = 0, 0
-    for f in fns:
-        try:
-            globals()[f]()
-            print("PASS", f); passed += 1
-        except Exception as e:
-            print("FAIL", f, "->", e); failed += 1
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)

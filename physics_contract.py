@@ -34,11 +34,6 @@ def grams_to_kg(g: float) -> float:
     return g / 1000.0
 
 
-def kg_to_grams(kg: float) -> float:
-    """Convert kilograms to grams. Inverse of grams_to_kg."""
-    return kg * 1000.0
-
-
 def mm_to_m(mm: float) -> float:
     """Convert millimeters to meters."""
     return mm / 1000.0

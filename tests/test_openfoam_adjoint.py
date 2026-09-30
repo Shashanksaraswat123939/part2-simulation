@@ -614,18 +614,3 @@ def test_invoke_adjoint_raises_when_openfoam_absent():
                 raise AssertionError("expected OpenFOAMNotFoundError")
     finally:
         Path(stl).unlink(missing_ok=True)
-
-
-if __name__ == "__main__":
-    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
-    passed, failed = 0, 0
-    for name in fns:
-        try:
-            globals()[name]()
-            print("PASS", name)
-            passed += 1
-        except Exception as e:  # noqa: BLE001
-            print("FAIL", name, "->", repr(e))
-            failed += 1
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)

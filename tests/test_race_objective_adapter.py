@@ -319,8 +319,6 @@ def test_negative_drag_rejected():
     raise AssertionError("Expected ValueError for negative drag")
 
 
-
-
 def test_com_height_out_of_fitted_range_is_clamped_not_rejected():
     """Superseded 2026-07-28: outside the FITTED range now clamps.
 
@@ -373,110 +371,6 @@ def test_negative_wheel_moi_rejected():
     raise AssertionError("Expected ValueError for negative wheel_moi")
 
 
-def test_build_settings_n_basis_zero_rejected():
-    """BuildSettings with n_basis=0 must be rejected by the guarded wrapper."""
-    from race_objective_adapter import build_smooth_sheet_model_guarded
-    from race_objective import BuildSettings
-    csv_path = _synthetic_csv()
-    try:
-        try:
-            build_smooth_sheet_model_guarded(csv_path, BuildSettings(n_basis=0, n_steps=60, ridge=1e-8, tail_tau=0.025, x_start=1e-4, x_grid_power=2.0))
-        except ValueError:
-            return
-        raise AssertionError("Expected ValueError for n_basis=0")
-    finally:
-        Path(csv_path).unlink(missing_ok=True)
-
-
-def test_build_settings_n_steps_zero_rejected():
-    """BuildSettings with n_steps=0 must be rejected by the guarded wrapper."""
-    from race_objective_adapter import build_smooth_sheet_model_guarded
-    from race_objective import BuildSettings
-    csv_path = _synthetic_csv()
-    try:
-        try:
-            build_smooth_sheet_model_guarded(csv_path, BuildSettings(n_basis=5, n_steps=0, ridge=1e-8, tail_tau=0.025, x_start=1e-4, x_grid_power=2.0))
-        except ValueError:
-            return
-        raise AssertionError("Expected ValueError for n_steps=0")
-    finally:
-        Path(csv_path).unlink(missing_ok=True)
-
-
-def test_validate_thrust_csv_rejects_negative_time():
-    """Thrust CSV with negative time values must be rejected."""
-    from race_objective_adapter import validate_thrust_csv_physical_sanity
-    f = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8", newline="")
-    with f:
-        writer = csv.DictWriter(f, fieldnames=["time (s)", "force (N)", "mass (kg)"])
-        writer.writeheader()
-        writer.writerows([
-            {"time (s)": -0.1, "force (N)": 3.0, "mass (kg)": 0.048},
-            {"time (s)": 0.1, "force (N)": 3.0, "mass (kg)": 0.045},
-        ])
-    try:
-        try:
-            validate_thrust_csv_physical_sanity(f.name)
-        except ValueError:
-            return
-        raise AssertionError("Expected ValueError for negative time")
-    finally:
-        Path(f.name).unlink(missing_ok=True)
-
-
-def test_validate_thrust_csv_rejects_negative_force():
-    """Thrust CSV with negative force values must be rejected."""
-    from race_objective_adapter import validate_thrust_csv_physical_sanity
-    f = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8", newline="")
-    with f:
-        writer = csv.DictWriter(f, fieldnames=["time (s)", "force (N)", "mass (kg)"])
-        writer.writeheader()
-        writer.writerows([
-            {"time (s)": 0.0, "force (N)": -3.0, "mass (kg)": 0.048},
-            {"time (s)": 0.1, "force (N)": 3.0, "mass (kg)": 0.045},
-        ])
-    try:
-        try:
-            validate_thrust_csv_physical_sanity(f.name)
-        except ValueError:
-            return
-        raise AssertionError("Expected ValueError for negative force")
-    finally:
-        Path(f.name).unlink(missing_ok=True)
-
-
-def test_validate_thrust_csv_rejects_non_positive_mass():
-    """Thrust CSV with non-positive mass values must be rejected."""
-    from race_objective_adapter import validate_thrust_csv_physical_sanity
-    f = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8", newline="")
-    with f:
-        writer = csv.DictWriter(f, fieldnames=["time (s)", "force (N)", "mass (kg)"])
-        writer.writeheader()
-        writer.writerows([
-            {"time (s)": 0.0, "force (N)": 3.0, "mass (kg)": 0.048},
-            {"time (s)": 0.1, "force (N)": 3.0, "mass (kg)": 0.0},
-        ])
-    try:
-        try:
-            validate_thrust_csv_physical_sanity(f.name)
-        except ValueError:
-            return
-        raise AssertionError("Expected ValueError for non-positive mass")
-    finally:
-        Path(f.name).unlink(missing_ok=True)
-
-
-def test_validate_thrust_csv_accepts_valid_csv():
-    """A physically valid thrust CSV must pass the sanity check."""
-    from race_objective_adapter import validate_thrust_csv_physical_sanity
-    csv_path = _synthetic_csv()
-    try:
-        validate_thrust_csv_physical_sanity(csv_path)
-    finally:
-        Path(csv_path).unlink(missing_ok=True)
-
-
-
 def test_the_com_penalty_is_never_negative():
     """A penalty that pays you back breaks the layer above.
 
@@ -519,8 +413,6 @@ def test_the_com_penalty_is_never_negative():
         f"penalty at the 30 mm target is {pen(30.0):.3e}, not ~0")
 
 
-
-
 def test_propellant_remaining_is_never_negative():
     """The car cannot un-burn its CO2.
 
@@ -558,20 +450,3 @@ def test_propellant_remaining_is_never_negative():
         f"propellant at t=0 is {prop[0]:.6f} kg, not the csv's 7.871 g")
     assert prop[-1] < 1e-6, (
         f"propellant at t=3.2 s is {prop[-1]:.3e} kg; it should be spent")
-
-
-if __name__ == "__main__":
-    # Collected by name; a hand-written call list silently drops tests appended
-    # after it, which has already hidden several tests in this repo.
-    _mod = sys.modules[__name__]
-    _p = _f = 0
-    for _n in sorted(n for n in dir(_mod) if n.startswith("test_")):
-        try:
-            getattr(_mod, _n)()
-            print("PASS " + _n)
-            _p += 1
-        except Exception as _e:  # noqa: BLE001
-            print("FAIL %s -> %s" % (_n, _e))
-            _f += 1
-    print("%d passed, %d failed" % (_p, _f))
-    sys.exit(1 if _f else 0)

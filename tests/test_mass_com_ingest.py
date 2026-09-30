@@ -185,17 +185,3 @@ def test_com_sanity_bounds_exactly_at_limit_accepted():
     # testing nothing about the boundary behaviour it is named for. The guard
     # itself now carries COM_SANITY_TOL_M for the same reason.
     assert abs(result.com_x_m - 10.0) < 1e-9, result.com_x_m
-
-
-if __name__ == "__main__":
-    import sys
-    fns = [f for f in dir(sys.modules[__name__]) if f.startswith("test_")]
-    passed, failed = 0, 0
-    for f in fns:
-        try:
-            globals()[f]()
-            print("PASS", f); passed += 1
-        except Exception as e:
-            print("FAIL", f, "->", e); failed += 1
-    print(f"\n{passed} passed, {failed} failed")
-    sys.exit(1 if failed else 0)
