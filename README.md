@@ -1,18 +1,17 @@
-# Part 2 — Physics: CFD and the race objective
+# Part 2 — Physics: CFD on SimScale and the race objective (simscale branch)
 
 | module | what |
 |---|---|
-| `openfoam_case.py` | the forward CFD case for a half car on ESI OpenFOAM v2412: domain (3 lengths ahead, 8 behind, symmetry plane, moving ground), snappyHexMesh with wake boxes, k-omega SST, Spalding wall function or a wall-resolved (y+ <= 2) layer stack, every Part 4 part as its own patch (wheels as rotating walls), forces per patch, y+ distribution per patch |
-| `cfd_wrapper.py` | `run_half_car_cfd`: validate the STL, run the case, return full-car drag and lift with health (residual, standard error and drift of the force mean); `run_half_car_adjoint` for the drag adjoint |
-| `openfoam_adjoint.py` | the adjoint case (`adjointOptimisationFoam`, frozen turbulence); it failed its gradient check on this car (right sign 3 of 8 modes), so the search uses direct CFD |
+| `simscale_case.py` | the half-car CFD on SimScale through the Python SDK: builds the flow domain (box minus the half car, one named face per boundary), imports it, meshes it (Simmetrix, a 15 µm first layer for y+ <= 2, wake boxes), runs k-omega SST with a moving ground and rotating wheels, and reads the forces per part. `python simscale_case.py probe <run_car folder>` checks the face mapping for free. |
+| `cfd_wrapper.py` | `run_half_car_cfd`: validate the STL, run it on SimScale, return half-car forces with health (standard error and drift of the force mean, final pressure residual) |
 | `race_objective.py` | the locked, differentiable race-time model (JAX): thrust curve, rolling and aero drag, wheel inertia. Its hash is in `race_objective_hash.txt` |
 | `race_objective_adapter.py`, `adjoint_contract.py` | the objective's parameter vector, guarded evaluation, and the drag weight dT/dD20 |
 | `physics_contract.py`, `mass_com_ingest.py`, `candidate_record.py` | units and the half-car contract, mass and COM of the whole car, one JSON record per candidate |
 
-Resolutions (`resolution=`): `coarse`, `medium` (the search, ~0.65 M cells with the wake
-boxes), `fine`, `resolved` (~5 M cells, wall-resolved).
+Mesh presets (`resolution=`): `coarse`, `medium`, `fine`, `resolved` (~5 M cells).
+Credentials come from the environment: `SIMSCALE_API_KEY`, `SIMSCALE_PROJECT_ID`.
 
 ```bash
-pip install -r ../part1-simulation/requirements.txt
+pip install "git+https://github.com/SimScaleGmbH/simscale-python-sdk.git@19.1.0"
 python -m pytest tests -q
 ```

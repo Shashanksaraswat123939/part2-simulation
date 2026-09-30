@@ -80,8 +80,8 @@ def test_non_watertight_stl_raises():
 
 
 def test_watertight_tetrahedron_passes_manifold_check():
-    original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: _fake_dict()
+    original = cfd_wrapper._invoke_simscale
+    cfd_wrapper._invoke_simscale = lambda stl_path, cfg, work: _fake_dict()
     path = _tetrahedron_path()
     try:
         half, health = run_half_car_cfd(path)
@@ -92,13 +92,13 @@ def test_watertight_tetrahedron_passes_manifold_check():
         assert half.pitching_moment_half == 0.05
         assert health.converged is True
     finally:
-        cfd_wrapper._invoke_openfoam_pipeline = original
+        cfd_wrapper._invoke_simscale = original
         Path(path).unlink(missing_ok=True)
 
 
 def test_negative_volume_cells_raises():
-    original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: _fake_dict(
+    original = cfd_wrapper._invoke_simscale
+    cfd_wrapper._invoke_simscale = lambda stl_path, cfg, work: _fake_dict(
         negative_volume_cells=1
     )
     path = _tetrahedron_path()
@@ -109,13 +109,13 @@ def test_negative_volume_cells_raises():
             return
         raise AssertionError("Expected CFDRunError")
     finally:
-        cfd_wrapper._invoke_openfoam_pipeline = original
+        cfd_wrapper._invoke_simscale = original
         Path(path).unlink(missing_ok=True)
 
 
 def test_non_convergence_does_not_raise_but_flags_health_report():
-    original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: _fake_dict(
+    original = cfd_wrapper._invoke_simscale
+    cfd_wrapper._invoke_simscale = lambda stl_path, cfg, work: _fake_dict(
         residual_final=1e-2
     )
     path = _tetrahedron_path()
@@ -124,13 +124,13 @@ def test_non_convergence_does_not_raise_but_flags_health_report():
         assert half.D20 == 5.0
         assert health.converged is False
     finally:
-        cfd_wrapper._invoke_openfoam_pipeline = original
+        cfd_wrapper._invoke_simscale = original
         Path(path).unlink(missing_ok=True)
 
 
 def test_determinism_of_dict_to_dataclass_packaging():
-    original = cfd_wrapper._invoke_openfoam_pipeline
-    cfd_wrapper._invoke_openfoam_pipeline = lambda stl_path, case_dir, **kw: _fake_dict()
+    original = cfd_wrapper._invoke_simscale
+    cfd_wrapper._invoke_simscale = lambda stl_path, cfg, work: _fake_dict()
     path = _tetrahedron_path()
     try:
         half_1, health_1 = run_half_car_cfd(path)
@@ -138,7 +138,7 @@ def test_determinism_of_dict_to_dataclass_packaging():
         assert half_1 == half_2
         assert health_1 == health_2
     finally:
-        cfd_wrapper._invoke_openfoam_pipeline = original
+        cfd_wrapper._invoke_simscale = original
         Path(path).unlink(missing_ok=True)
 
 
