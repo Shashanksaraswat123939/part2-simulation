@@ -578,10 +578,57 @@ def test_transition_model_writes_its_fields_and_a_resolved_layer_stack():
                 assert (run / "0" / f).is_file()
             assert "kOmegaSSTLM" in (run / "constant" / "turbulenceProperties").read_text()
             snappy = (run / "system" / "snappyHexMeshDict").read_text()
-            assert "firstLayerThickness 2e-05" in snappy and "nSurfaceLayers 12" in snappy
+            assert "expansionRatio 1.3" in snappy and "featureAngle 180" in snappy
+            assert "kLowReWallFunction" in (run / "0" / "k").read_text()
             assert "div(phi,ReThetat)" in (run / "system" / "fvSchemes").read_text()
     finally:
         Path(stl).unlink(missing_ok=True)
+
+
+def test_resolved_mesh_has_one_wall_cell_size_and_a_first_layer_near_the_target():
+    stl = _write_stl(_PANELS)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            run = Path(d) / "run"
+            cfg = OpenFOAMRunConfig(resolution="resolved")
+            meta = oc.build_case(str(run), stl, cfg)
+            snappy = (run / "system" / "snappyHexMeshDict").read_text()
+            assert "level (5 5);" in snappy                       # min == max on the walls
+            lc = meta["layer_controls"]
+            h = meta["cell_size_m"] / 2 ** 5
+            first = lc["finalLayerThickness"] * h / lc["expansionRatio"] ** (lc["nSurfaceLayers"] - 1)
+            assert 0.5 * cfg.first_layer_m < first <= cfg.first_layer_m * 1.0001, first
+            assert "underbody {" not in snappy.split("refinementRegions")[1].split("locationInMesh")[0]
+            # a tuning override replaces one entry and nothing else
+            lc2 = oc.resolved_layer_controls(OpenFOAMRunConfig(layer_overrides={"featureAngle": 130}), h)
+            assert lc2["featureAngle"] == 130 and lc2["expansionRatio"] == lc["expansionRatio"]
+    finally:
+        Path(stl).unlink(missing_ok=True)
+
+
+def test_yplus_field_statistics_count_faces_above_two():
+    txt = """boundaryField
+{
+    inlet { type calculated; value uniform 0; }
+    car
+    {
+        type            calculated;
+        value           nonuniform List<scalar> 
+5
+(
+0.5
+1.5
+1.9
+2.5
+30
+)
+;
+    }
+}
+"""
+    s = oc.parse_yplus_field(txt)["car"]
+    assert s["n"] == 5 and s["max"] == 30.0 and abs(s["frac_le_2"] - 0.6) < 1e-12
+    assert abs(s["frac_le_5"] - 0.8) < 1e-12 and "inlet" not in oc.parse_yplus_field(txt)
 
 
 def test_wake_boxes_run_behind_the_car_from_the_track():

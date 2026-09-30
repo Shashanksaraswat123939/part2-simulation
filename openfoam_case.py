@@ -57,6 +57,9 @@ RESOLUTION_REFINEMENT: dict[str, tuple[int, int]] = {
     "coarse": (2, 3),
     "medium": (3, 4),
     "fine": (4, 5),
+    # ~5 M cells for the half car with the wall-resolved layer stack: every
+    # wall at one cell size (0.61 mm; wheels 0.31 mm), wake boxes at level 4/3.
+    "resolved": (5, 5),
 }
 
 # kOmegaSSTLM (Langtry-Menter gamma-ReTheta transition, 2026-09-30): at a
@@ -146,6 +149,22 @@ class OpenFOAMRunConfig:
     # barely resolved, and the medium-vs-fine study only ever refined the
     # surfaces. See wake_boxes().
     wake_refinement: bool = True
+    # WALL-RESOLVED MESH (team requirement 2026-09-30: y+ <= 2). A stack of
+    # prism layers growing by `layer expansion` from a first layer of
+    # `first_layer_m` on the body-level cells (half that on the wheels, which
+    # are one level finer and see twice the relative speed at their tops), on
+    # walls meshed at ONE cell size so one stack fits them all. Implied by
+    # resolution="resolved" and by the transition model. `layer_overrides`
+    # replaces individual addLayersControls entries (for tuning runs).
+    wall_resolved: bool = False
+    first_layer_m: float = 1.5e-5
+    layer_overrides: Optional[dict] = None
+    wake_level: Optional[int] = None      # near-wake box level; None = min(surface min level, 4)
+
+    @property
+    def resolved(self) -> bool:
+        return (self.wall_resolved or self.resolution == "resolved"
+                or self.turbulence_model == "kOmegaSSTLM")
 
     def __post_init__(self):
         if self.turbulence_model not in TURBULENCE_MODELS:
@@ -396,6 +415,26 @@ def underbody_box(
     return ((x0 - margin, 0.0, -margin), (x1 + margin, y1 + margin, z_top))
 
 
+def resolved_layer_controls(cfg, surface_cell_m: float) -> dict:
+    """addLayersControls for the wall-resolved stack on cells of size
+    `surface_cell_m`. Sizes are RELATIVE to the local surface cell: the last
+    layer is a quarter of it and the stack about one cell thick, so the same
+    entry serves the body and the (finer) wheels. The count follows from the
+    first-layer target; the rest are the settings that keep layers from
+    collapsing at edges and in gaps."""
+    er, final = 1.3, 0.25
+    n = 1 + math.ceil(math.log(final * surface_cell_m / cfg.first_layer_m) / math.log(er))
+    c = {"nSurfaceLayers": max(n, 3), "relativeSizes": "true", "expansionRatio": er,
+         "finalLayerThickness": final, "minThickness": 0.001, "nGrow": 0,
+         "featureAngle": 180, "slipFeatureAngle": 30, "nRelaxIter": 5,
+         "nSmoothSurfaceNormals": 3, "nSmoothNormals": 5, "nSmoothThickness": 10,
+         "maxFaceThicknessRatio": 0.6, "maxThicknessToMedialRatio": 0.5,
+         "minMedialAxisAngle": 60, "nBufferCellsNoExtrude": 0, "nLayerIter": 60,
+         "nRelaxedIter": 20}
+    c.update(cfg.layer_overrides or {})
+    return c
+
+
 def wake_boxes(bounds, surface_min_level: int) -> tuple:
     """(name, (min, max), level) refinement boxes for the car and its wake.
 
@@ -525,11 +564,11 @@ def build_snappy_dict(
     underbody: Optional[tuple[tuple[float, float, float], tuple[float, float, float]]] = None,
     underbody_extra_levels: int = 1,
     boxes: tuple = (),
-    resolved_wall: bool = False,
+    layer_controls: Optional[dict] = None,
 ) -> str:
     """boxes: extra (name, (min, max), level) refinement boxes (wake_boxes).
-    resolved_wall: prism layers sized for y+ ~ 1 (transition model) instead
-    of the wall-function stack."""
+    layer_controls: addLayersControls entries (resolved_layer_controls) for
+    the wall-resolved stack; None = the 3-layer wall-function stack."""
     lo, hi = refinement
     underbody_geometry = ""
     underbody_region = ""
@@ -551,15 +590,16 @@ def build_snappy_dict(
                                f"        min  ({bx0} {by0} {bz0});\n"
                                f"        max  ({bx1} {by1} {bz1});\n    }}\n")
         underbody_region += f" {name} {{ mode inside; levels ((1e15 {level})); }}"
-    # Wall-function stack: 3 layers relative to the surface cell. Resolved
-    # stack (y+ ~ 1 at 20 m/s): first cell 20 um, 12 layers x 1.2 = 0.79 mm.
-    sizes = ("""    relativeSizes true;
-    expansionRatio 1.2;
-    finalLayerThickness 0.5;
-    minThickness 0.05;""" if not resolved_wall else """    relativeSizes false;
-    expansionRatio 1.2;
-    firstLayerThickness 2e-05;
-    minThickness 1e-06;""")
+    lc = dict(layer_controls or {"nSurfaceLayers": 3, "relativeSizes": "true",
+                                 "expansionRatio": 1.2, "finalLayerThickness": 0.5,
+                                 "minThickness": 0.05, "nGrow": 0, "featureAngle": 120,
+                                 "nRelaxIter": 5, "nSmoothSurfaceNormals": 1,
+                                 "nSmoothNormals": 3, "nSmoothThickness": 10,
+                                 "maxFaceThicknessRatio": 0.5,
+                                 "maxThicknessToMedialRatio": 0.3, "minMedialAxisAngle": 90,
+                                 "nBufferCellsNoExtrude": 0, "nLayerIter": 50})
+    n_layers = lc.pop("nSurfaceLayers")
+    controls = "\n".join(f"    {k} {v};" for k, v in lc.items())
     layers_block = ""
     if add_layers:
         layers_block = f"""
@@ -567,22 +607,12 @@ def build_snappy_dict(
     {{
         "car.*"
         {{
-            nSurfaceLayers {12 if resolved_wall else 3};
+            nSurfaceLayers {n_layers};
         }}
     }}
-{sizes}
-    nGrow 0;
-    featureAngle 120;
-    nRelaxIter 5;
-    nSmoothSurfaceNormals 1;
-    nSmoothNormals 3;
-    nSmoothThickness 10;
-    maxFaceThicknessRatio 0.5;
-    maxThicknessToMedialRatio 0.3;
-    minMedialAxisAngle 90;
-    nBufferCellsNoExtrude 0;
-    nLayerIter 50;
+{controls}
 """
+    relaxed = "    relaxed { maxNonOrtho 75; }\n" if layer_controls else ""
     return _header("dictionary", "snappyHexMeshDict") + f"""
 castellatedMesh true;
 snap            true;
@@ -658,7 +688,7 @@ meshQualityControls
     minTriangleTwist -1;
     nSmoothScale 4;
     errorReduction 0.75;
-}}
+{relaxed}}}
 
 mergeTolerance 1e-6;
 """
@@ -1127,7 +1157,8 @@ def apply_extra_surfaces(run: Path, cfg, resolution_levels: tuple,
         for n in names))
     rs = "    refinementSurfaces\n    {\n"
     t = t.replace(rs, rs + "".join(
-        f"        {s['name']} {{ level ({lo} {hi + (1 if s.get('rotating') else 0)}); "
+        f"        {s['name']} {{ level ({hi + 1 if s.get('rotating') and lo == hi else lo} "
+        f"{hi + (1 if s.get('rotating') else 0)}); "
         f"patchInfo {{ type wall; }} }}\n" for s in surfs))
     feat = f'        {{ file "car.eMesh"; level {hi}; }}\n'
     t = t.replace(feat, feat + "".join(f'        {{ file "{n}.eMesh"; level {hi}; }}\n'
@@ -1211,14 +1242,22 @@ def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
 
     add_layers = cfg.turbulence_model != "laminar"
     refinement = RESOLUTION_REFINEMENT[cfg.resolution]
+    wake_level = cfg.wake_level if cfg.wake_level is not None else min(refinement[0], 4)
+    layer_controls = None
+    if cfg.resolved:
+        refinement = (refinement[1], refinement[1])      # one cell size on every wall
+        layer_controls = resolved_layer_controls(cfg, cell_size / 2 ** refinement[1])
 
     _write(run / "system" / "blockMeshDict", build_blockmesh_dict(box_min, box_max, cell_size))
     _write(run / "system" / "snappyHexMeshDict",
            build_snappy_dict("car.stl", loc, refinement, add_layers,
                              underbody=underbody_box(bounds),
-                             underbody_extra_levels=cfg.underbody_refinement_level,
-                             boxes=wake_boxes(bounds, refinement[0]) if cfg.wake_refinement else (),
-                             resolved_wall=cfg.turbulence_model == "kOmegaSSTLM"))
+                             # on the 0.61 mm "resolved" walls the gap already has 3-7
+                             # cells plus the layers; one more level there is 2.5 M cells
+                             underbody_extra_levels=(0 if cfg.resolution == "resolved"
+                                                     else cfg.underbody_refinement_level),
+                             boxes=wake_boxes(bounds, wake_level) if cfg.wake_refinement else (),
+                             layer_controls=layer_controls))
     _write(run / "system" / "controlDict", build_control_dict(cfg, frontal_area_half))
     _write(run / "system" / "fvSchemes", _FV_SCHEMES)
     _write(run / "system" / "fvSolution", _FV_SOLUTION)
@@ -1233,6 +1272,7 @@ def build_case(run_dir: str, stl_path: str, cfg: OpenFOAMRunConfig) -> dict:
     apply_extra_surfaces(run, cfg, refinement)
 
     return {
+        "layer_controls": layer_controls,
         "bounds": bounds,
         "frontal_area_half": frontal_area_half,
         "cell_size_m": cell_size,
@@ -1281,6 +1321,9 @@ boundaryField
         return
     k, omega, nut = turbulence_inlet_values(cfg, ref_len)
     nut_wall = "nutUSpaldingWallFunction" if cfg.wall_function == "spalding" else "nutkWallFunction"
+    # resolved walls: k goes to zero at the wall (kLowRe blends by y+, so the
+    # faces where a layer collapsed still get the log-law value)
+    k_wall = "kLowReWallFunction" if cfg.resolved else "kqRWallFunction"
     _write(zero_dir / "k", _header("volScalarField", "k") + f"""
 dimensions      [0 2 -2 0 0 0 0];
 internalField   uniform {k};
@@ -1292,7 +1335,7 @@ boundaryField
     outer       {{ type slip; }}
     upperWall   {{ type slip; }}
     lowerWall   {{ type kqRWallFunction; value uniform {k}; }}
-    car         {{ type kqRWallFunction; value uniform {k}; }}
+    car         {{ type {k_wall}; value uniform {k}; }}
 }}
 """)
     _write(zero_dir / "omega", _header("volScalarField", "omega") + f"""
@@ -1510,6 +1553,40 @@ def _read_yplus(run_dir: str, solver_log: str) -> str:
     return solver_log
 
 
+def parse_yplus_field(text: str) -> dict:
+    """{patch: {n, min, mean, p99, max, frac_le_2, frac_le_5}} from an ASCII
+    yPlus field file. The solver log only has min/max/average; whether a mesh
+    is wall-resolved is a statement about the DISTRIBUTION (how many faces
+    are above 2), so the faces are read."""
+    out = {}
+    body = text[text.find("boundaryField"):]
+    for m in re.finditer(r"(\w+)\s*\{\s*type\s+calculated;\s*value\s+nonuniform\s+List<scalar>\s*"
+                         r"(\d+)\s*\(([^)]*)\)", body):
+        v = sorted(float(x) for x in m.group(3).split())
+        if not v:
+            continue
+        n = len(v)
+        out[m.group(1)] = {"n": n, "min": v[0], "mean": sum(v) / n, "p99": v[min(n - 1, int(0.99 * n))],
+                           "max": v[-1], "frac_le_2": sum(x <= 2.0 for x in v) / n,
+                           "frac_le_5": sum(x <= 5.0 for x in v) / n}
+    return out
+
+
+def yplus_field_stats(run_dir: str, bashrc: str, timeout_s: int) -> dict:
+    """Write the final yPlus field in ASCII and return parse_yplus_field of it.
+    Call AFTER the forces are read: a post-process pass may add force files."""
+    run = Path(run_dir)
+    cd = run / "system" / "controlDict"
+    cd.write_text(re.sub(r"writeFormat\s+binary", "writeFormat     ascii", cd.read_text()))
+    _run("simpleFoam -postProcess -func yPlus -latestTime", run, bashrc, "yPlusField.log", timeout_s)
+    times = [d for d in run.iterdir() if d.is_dir() and re.fullmatch(r"[0-9.]+", d.name)
+             and (d / "yPlus").is_file()]
+    if not times:
+        return {}
+    latest = max(times, key=lambda d: float(d.name))
+    return parse_yplus_field((latest / "yPlus").read_text(errors="replace"))
+
+
 def new_run_dir_name() -> str:
     """Unique per-run directory name, shared by the primal and adjoint invokes.
 
@@ -1574,6 +1651,13 @@ def invoke(stl_path: str, case_dir: str, cfg: Optional[OpenFOAMRunConfig] = None
             "courant_max": courant,
             "groups": read_group_forces(run_dir, cfg) if cfg.extra_surfaces else None,
         }
+        try:                       # never lose a solve to its own diagnostics
+            yp = yplus_field_stats(run_dir, resolved_bashrc, cfg.stage_timeout_s)
+        except Exception as exc:   # noqa: BLE001
+            yp = {"_error": f"{type(exc).__name__}: {exc}"[:200]}
+        result["y_plus"] = yp
+        for g, v in (result["groups"] or {}).items():
+            v["y_plus"] = yp.get(g)
         succeeded = True
         return result
     finally:

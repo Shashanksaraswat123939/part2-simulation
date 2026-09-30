@@ -212,6 +212,10 @@ def run_half_car_cfd(
     domain_reference_bounds=None,
     wall_function: str = "spalding",
     wake_refinement: bool = True,
+    wall_resolved: bool = False,
+    first_layer_m: float = 1.5e-5,
+    layer_overrides: Optional[dict] = None,
+    wake_level: Optional[int] = None,
 ) -> tuple[HalfCarQuantities, CFDHealthReport]:
     """
     Validate a half-car STL and package OpenFOAM half-domain outputs.
@@ -225,7 +229,9 @@ def run_half_car_cfd(
         max_iterations: steady solver iteration cap (controlDict endTime).
         turbulence_model: "laminar", "kOmegaSST" (default) or "kOmegaSSTLM"
             (transition; y+ ~ 1 prism layers).
-        wall_function, wake_refinement: see OpenFOAMRunConfig.
+        wall_function, wake_refinement, wall_resolved, first_layer_m,
+        layer_overrides, wake_level: see OpenFOAMRunConfig. resolution
+            "resolved" is the ~5 M cell, y+ <= 2 mesh.
         resolution: "coarse" | "medium" | "fine" — snappyHexMesh refinement
             level, used by the mesh-independence study.
 
@@ -267,6 +273,10 @@ def run_half_car_cfd(
         domain_reference_bounds=domain_reference_bounds,
         wall_function=wall_function,
         wake_refinement=wake_refinement,
+        wall_resolved=wall_resolved,
+        first_layer_m=first_layer_m,
+        layer_overrides=layer_overrides,
+        wake_level=wake_level,
     )
 
     case_dir = Path(__file__).resolve().parent / "cfd_case_template"
