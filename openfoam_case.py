@@ -415,11 +415,13 @@ def resolved_layer_controls(cfg, surface_cell_m: float) -> dict:
     n = 1 + math.ceil(math.log(final * surface_cell_m / cfg.first_layer_m) / math.log(er))
     c = {"nSurfaceLayers": max(n, 3), "relativeSizes": "true", "expansionRatio": er,
          "finalLayerThickness": final, "minThickness": 0.001, "nGrow": 0,
-         "featureAngle": 180, "slipFeatureAngle": 30, "nRelaxIter": 5,
+         "featureAngle": 180, "slipFeatureAngle": 30, "nRelaxIter": 8,
          "nSmoothSurfaceNormals": 3, "nSmoothNormals": 5, "nSmoothThickness": 10,
          "maxFaceThicknessRatio": 0.6, "maxThicknessToMedialRatio": 0.5,
          "minMedialAxisAngle": 60, "nBufferCellsNoExtrude": 0, "nLayerIter": 60,
-         "nRelaxedIter": 20}
+         "nRelaxedIter": 20,
+         # 3 outer passes: body faces at y+ <= 2 went from 22 % to 57 % (2026-09-30)
+         "nOuterIter": 3}
     c.update(cfg.layer_overrides or {})
     return c
 
@@ -588,7 +590,9 @@ def build_snappy_dict(
                                  "maxThicknessToMedialRatio": 0.3, "minMedialAxisAngle": 90,
                                  "nBufferCellsNoExtrude": 0, "nLayerIter": 50})
     n_layers = lc.pop("nSurfaceLayers")
-    controls = "\n".join(f"    {k} {v};" for k, v in lc.items())
+    # a value written as "{ ... }" is a sub-dictionary: no trailing semicolon
+    controls = "\n".join(f"    {k} {v}" if str(v).lstrip().startswith("{") else f"    {k} {v};"
+                          for k, v in lc.items())
     layers_block = ""
     if add_layers:
         layers_block = f"""

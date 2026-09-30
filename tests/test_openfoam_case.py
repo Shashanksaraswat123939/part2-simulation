@@ -584,6 +584,13 @@ def test_resolved_mesh_has_one_wall_cell_size_and_a_first_layer_near_the_target(
             # a tuning override replaces one entry and nothing else
             lc2 = oc.resolved_layer_controls(OpenFOAMRunConfig(layer_overrides={"featureAngle": 130}), h)
             assert lc2["featureAngle"] == 130 and lc2["expansionRatio"] == lc["expansionRatio"]
+            # a sub-dictionary override is written as a dictionary
+            lc3 = oc.resolved_layer_controls(OpenFOAMRunConfig(layer_overrides={
+                "meshShrinker": "displacementMotionSolver", "solver": "displacementLaplacian",
+                "displacementLaplacianCoeffs": "{ diffusivity quadratic inverseDistance (wall); }"}), h)
+            txt = oc.build_snappy_dict("car.stl", (0, 0, 0), (5, 5), True, layer_controls=lc3)
+            assert "displacementLaplacianCoeffs { diffusivity quadratic inverseDistance (wall); }\n" in txt
+            assert "meshShrinker displacementMotionSolver;" in txt and "nOuterIter 3;" in txt
     finally:
         Path(stl).unlink(missing_ok=True)
 
