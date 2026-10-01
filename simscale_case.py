@@ -805,7 +805,7 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
 
 def build_mesh_model(cfg: SimScaleConfig, faces: dict, wheels: dict, primitive_ids: dict):
     from simscale_sdk import (AutomaticLayerOff, CustomMeshSizingSimmetrix, DimensionalLength,
-                              FirstLayerGrowth, InsideRegionRefinementWithLength,
+                              GeometricGrowth, InsideRegionRefinementWithLength,
                               ManualMeshSizingSimmetrix, RegionRefinementWithLength,
                               SimmetrixBoundaryLayerRefinement, SimmetrixMeshingFluid,
                               SurfaceCustomSizing, TopologicalReference)
@@ -820,15 +820,18 @@ def build_mesh_model(cfg: SimScaleConfig, faces: dict, wheels: dict, primitive_i
            SurfaceCustomSizing(name="wheel_surface", sizing=CustomMeshSizingSimmetrix(
                default_size=L(wheel_h), min_size=L(wheel_h / 4)),
                topological_reference=TopologicalReference(entities=wheel, sets=[])),
+           # Simmetrix takes the stack as first layer + total thickness
            SimmetrixBoundaryLayerRefinement(
-               name="wall_layers", layer_type=FirstLayerGrowth(
-                   number_of_layers=cfg.n_layers, growth_rate=cfg.layer_growth,
-                   first_layer_size=L(cfg.first_layer_m)),
+               name="wall_layers", layer_type=GeometricGrowth(
+                   number_of_layers=cfg.n_layers, first_layer_size=L(cfg.first_layer_m),
+                   total_absolute_thickness=L(cfg.first_layer_m * (cfg.layer_growth ** cfg.n_layers - 1)
+                                              / (cfg.layer_growth - 1))),
                topological_reference=TopologicalReference(entities=body + wheel, sets=[]))]
     for name, h in (("wakeNear", near_h), ("wakeFar", farwake_h)):
         if name in primitive_ids:
             ref.append(RegionRefinementWithLength(
                 name=name, refinement=InsideRegionRefinementWithLength(length=L(h)),
+                topological_reference=TopologicalReference(entities=[], sets=[]),
                 geometry_primitive_uuids=[primitive_ids[name]]))
     return SimmetrixMeshingFluid(
         sizing=ManualMeshSizingSimmetrix(maximum_edge_length=L(far_h), minimum_edge_length=L(wheel_h / 4)),
