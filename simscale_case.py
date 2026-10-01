@@ -91,11 +91,10 @@ class SimScaleError(RuntimeError):
 
 
 OWN_PROJECT_NAME = "STEM Racing optimiser"
-# Per-part gap closing beyond SimScaleConfig.close_gap_m. The halo sits in a
-# pocket that follows its shape with ~0.1-0.3 mm clearance, and its CAD has
-# near-touching inner surfaces: 333 thin-air faces against the body and 41
-# against itself at 0.05 mm (measured 2026-10-01). For the CFD it is glued in.
-CLOSE_GAP_PART_M = {"halo": 2e-4}
+# Parts never grown along their normals: the halo CAD is too detailed (growing
+# it 0.2 mm folded it into itself: SimScale "face self_int" faults, probe 3,
+# 2026-10-01). As drawn it imports cleanly (probe 2).
+EXACT_PARTS = {"halo"}
 _PROJECT: Optional[str] = None          # the project in use (see _project)
 
 
@@ -165,17 +164,25 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
             o = man(t).simplify(cfg.simplify_m).to_mesh()
             t = trimesh.Trimesh(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts),
                                 process=False)
-        grow = max(cfg.close_gap_m, CLOSE_GAP_PART_M.get(n, 0.0)) if cfg.close_gap_m > 0 else 0.0
-        if grow > 0 and n not in rotating:
-            t = trimesh.Trimesh(t.vertices + t.vertex_normals * grow, t.faces, process=False)
+        if cfg.close_gap_m > 0 and n not in rotating | EXACT_PARTS:
+            t = trimesh.Trimesh(t.vertices + t.vertex_normals * cfg.close_gap_m, t.faces,
+                                process=False)
         # Each part is a right half closed on y = 0, exactly where the box's
         # symmetry face is, and the half body's surface runs into that face in
         # a strip of nearly flat triangles up to ~0.14 mm off it: both leave
         # slivers. Every vertex within 0.2 mm of the plane goes through it so
-        # the boolean cuts cleanly.
-        v = np.array(t.vertices)
-        v[v[:, 1] < 2e-4, 1] = -max(cfg.close_gap_m, 5e-5)
-        parts[n] = trimesh.Trimesh(v, t.faces, process=False)
+        # the boolean cuts cleanly. A vertex whose move would turn a face over
+        # (a curved surface meeting the plane: halo, 2026-10-01) stays put.
+        snap = t.vertices[:, 1] < 2e-4
+        while True:
+            v = np.array(t.vertices)
+            v[snap, 1] = -max(cfg.close_gap_m, 5e-5)
+            moved = trimesh.Trimesh(v, t.faces, process=False)
+            flip = (moved.face_normals * t.face_normals).sum(1) < 0
+            if not flip.any():
+                break
+            snap[t.faces[flip].ravel()] = False
+        parts[n] = moved
     lo, hi = domain_box(case_bounds(car_stl, cfg))
     box = man(trimesh.creation.box(bounds=[lo, hi]))
     owner = {box.original_id(): None}
