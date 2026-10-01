@@ -211,6 +211,11 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
     # Air the car seals in (the cockpit under the halo, 651 mm3 on the start
     # car) is a region of its own to SimScale and plays no part in the flow.
     fluid_m = max(fluid_m.decompose(), key=lambda m: m.volume())
+    # Edges of a few microns (where cuts pass near vertices) make SimScale
+    # split faces into pieces it cannot sew back (probes 7-9, 2026-10-01).
+    # Manifold collapses them inside each face; collapse_short_edges below
+    # does the ones on face boundaries.
+    fluid_m = fluid_m.set_tolerance(TIDY_M)
     out = fluid_m.to_mesh()
     fluid = trimesh.Trimesh(np.asarray(out.vert_properties)[:, :3], np.asarray(out.tri_verts),
                             process=False)
@@ -225,7 +230,70 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
     side = np.stack([np.abs(c[:, 0] - lo[0]), np.abs(c[:, 0] - hi[0]), np.abs(c[:, 1] - lo[1]),
                      np.abs(c[:, 1] - hi[1]), np.abs(c[:, 2] - lo[2]), np.abs(c[:, 2] - hi[2])])
     labels[on_box] = np.array(BOX_FACES, dtype=object)[side.argmin(axis=0)]
+    fluid, labels = collapse_short_edges(fluid, labels, TIDY_M)
     return fluid, labels, list(parts)
+
+
+TIDY_M = 2e-5     # far below the 0.3-2 mm surface cells
+
+
+def collapse_short_edges(mesh, labels, tol: float, passes: int = 20):
+    """Remove edges shorter than `tol` by moving one end onto the other. A
+    vertex on the line between two labelled faces moves only along that line;
+    a vertex where three or more meet never moves; a move that would turn a
+    face over, or join two parts of the surface that only the edge's own two
+    faces join, is skipped. Labels stay with their faces."""
+    import trimesh
+    V = np.array(mesh.vertices)
+    F = np.array(mesh.faces)
+    lab = np.asarray(labels)
+    for _ in range(passes):
+        vf = [[] for _ in range(len(V))]
+        for i, t in enumerate(F):
+            for v in t:
+                vf[v].append(i)
+        kind = [set(lab[f]) for f in vf]
+        e = np.sort(np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1)
+        e = np.unique(e, axis=0)
+        ln = np.linalg.norm(V[e[:, 0]] - V[e[:, 1]], axis=1)
+        short = e[np.argsort(ln)][np.sort(ln) < tol]
+        if not len(short):
+            break
+        nrm = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+        touched, dead, done = set(), np.zeros(len(F), bool), 0
+        for a, b in short:
+            if a in touched or b in touched:
+                continue
+            both = [f for f in vf[a] if b in F[f]]
+            if len(both) != 2:
+                continue
+            on_line = lab[both[0]] != lab[both[1]]
+            for keep, gone in ((a, b), (b, a)):
+                kg = kind[gone]
+                if len(kg) >= 3 or (len(kg) == 2 and not (on_line and kg <= kind[keep])):
+                    continue
+                ring_k = {v for f in vf[keep] for v in F[f]} - {keep}
+                ring_g = {v for f in vf[gone] for v in F[f]} - {gone}
+                opp = {v for f in both for v in F[f]} - {a, b}
+                if ring_k & ring_g != opp:
+                    continue
+                moved = [f for f in vf[gone] if f not in both]
+                T = F[moved].copy()
+                T[T == gone] = keep
+                n2 = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])
+                if np.any(np.einsum("ij,ij->i", n2, nrm[moved]) <= 0):
+                    continue
+                F[moved] = T
+                dead[both] = True
+                touched |= ring_k | ring_g | {a, b}
+                done += 1
+                break
+        if not done:
+            break
+        F, lab = F[~dead], lab[~dead]
+    out = trimesh.Trimesh(V, F, process=False)
+    out.remove_unreferenced_vertices()
+    return out, lab
 
 
 def thin_air(fluid, labels, below_m: float = 1.5e-4) -> list:
@@ -405,7 +473,8 @@ def _use_own_project_if_refused(api, call):
 
 
 def _poll(get, done=("FINISHED", "SUCCESS"), failed=("FAILED", "ERROR", "CANCELED"),
-          every=15.0, what="operation"):
+          every=15.0, what="operation", timeout_s=None):
+    t0 = time.time()
     while True:
         obj = get()
         status = (getattr(obj, "status", "") or "").upper()
@@ -413,6 +482,8 @@ def _poll(get, done=("FINISHED", "SUCCESS"), failed=("FAILED", "ERROR", "CANCELE
             return obj
         if status in failed:
             raise SimScaleError(f"{what} {status}: {getattr(obj, 'failure_reason', '')}")
+        if timeout_s and time.time() - t0 > timeout_s:
+            raise SimScaleError(f"{what} still {status} after {timeout_s / 60:.0f} min")
         time.sleep(every)
 
 
@@ -429,8 +500,14 @@ def import_geometry(api, stl_path: str, name: str, every: float = 15.0) -> str:
             format="STL", input_unit="m",
             options=GeometryImportRequestOptions(facet_split=False, sewing=True, improve=True,
                                                  optimize_for_lbm_solver=False))))
-    done = _poll(lambda: api["imports"].get_geometry_import(_project(), imp.geometry_import_id),
-                 every=every, what="geometry import")
+    try:
+        # an import takes ~20 s; one sat at "Sewing 0 of 35 bodies" for 10+ min (2026-10-01)
+        done = _poll(lambda: api["imports"].get_geometry_import(_project(), imp.geometry_import_id),
+                     every=every, what="geometry import", timeout_s=1200)
+    finally:
+        log = api["imports"].get_geometry_import_event_log(_project(), imp.geometry_import_id)
+        for e in log.entries or []:
+            print(f"[simscale import] {e.to_dict()}", flush=True)
     return done.geometry_id
 
 
