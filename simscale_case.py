@@ -183,12 +183,13 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
         # symmetry face is: coincident faces leave slivers. Parts grown above
         # (and the half body, whose surface runs into that face in a strip of
         # nearly flat triangles up to ~0.14 mm off it) have every vertex within
-        # 0.2 mm of the plane moved through it. An exact part is joined to its
-        # mirror image instead: moving its curved surface flat turns faces over
-        # (9 on the halo), and its closing face, being exact, simply vanishes.
-        if n in EXACT_PARTS and t.vertices[:, 1].min() < 1e-6:
-            o = (man(t) + man(t).mirror((0, 1, 0))).to_mesh()
-            t = trimesh.Trimesh(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts),
+        # 0.2 mm of the plane moved through it. An exact part, whose closing
+        # face is exactly flat, is moved through the plane whole instead:
+        # moving only its curved surface turns faces over (9 on the halo), and
+        # joining it to its mirror image left the closing face inside it
+        # (probe 6).
+        if n in EXACT_PARTS:
+            t = trimesh.Trimesh(t.vertices - [0.0, max(cfg.close_gap_m, 5e-5), 0.0], t.faces,
                                 process=False)
         else:
             v = np.array(t.vertices)
