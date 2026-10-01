@@ -8,8 +8,10 @@ group, k-omega SST), run by SimScale:
   1. DOMAIN   built here: the wind-tunnel box minus the half car (every Part 4
               part included), ONE closed fluid solid, written as an ASCII STL
               with one named `solid` per boundary. SimScale imports each named
-              solid as its own face when facet splitting is off, so every
-              boundary condition and force group can address it.
+              solid as its own sheet (in "#1", "#2" pieces if disconnected);
+              sewing joins them into one fluid region whose faces keep those
+              names, so every boundary condition and force group can address
+              them.
   2. IMPORT   upload + geometry import (STL, metres), then the face mapping:
               SimScale face name -> our boundary name.
   3. MESH     Simmetrix: manual sizing, finer surface sizing on the car and the
@@ -32,6 +34,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import math
 import os
 import time
@@ -421,7 +424,7 @@ def import_geometry(api, stl_path: str, name: str, every: float = 15.0) -> str:
         _project(), GeometryImportRequest(
             name=name, location=GeometryImportRequestLocation(storage_id=storage.storage_id),
             format="STL", input_unit="m",
-            options=GeometryImportRequestOptions(facet_split=False, sewing=False, improve=True,
+            options=GeometryImportRequestOptions(facet_split=False, sewing=True, improve=True,
                                                  optimize_for_lbm_solver=False))))
     done = _poll(lambda: api["imports"].get_geometry_import(_project(), imp.geometry_import_id),
                  every=every, what="geometry import")
@@ -447,7 +450,9 @@ def faces_by_label(mappings: list, names: list) -> dict:
     report it, the faces are taken in file order (one face per solid)."""
     out = {n: [] for n in names}
     for m in mappings:
-        orig = " ".join(str(v) for o in (m.get("originate_from") or []) for v in o.values())
+        # a solid in disconnected patches comes back as "car#1", "car#2", ...
+        orig = " ".join(re.sub(r"#\d+$", "", str(v))
+                        for o in (m.get("originate_from") or []) for v in o.values())
         hit = [n for n in names if n and (f" {n} " in f" {orig} " or orig.endswith(n))]
         if len(hit) == 1:
             out[hit[0]].append(m["name"])
@@ -726,4 +731,7 @@ if __name__ == "__main__":
     print(json.dumps({"faces": len(fluid.faces), "closed": bool(fluid.is_watertight), "solids": names,
                       "thin_air": slits[:20], "n_thin_air": len(slits)}, default=str))
     if a.cmd == "probe":
-        print(json.dumps(probe(str(run / "domain.stl"), names), indent=1, default=str))
+        r = probe(str(run / "domain.stl"), names)
+        print(json.dumps(r, indent=1, default=str))
+        if "_error" in r["mapped"] or not r["regions"]:
+            raise SystemExit("probe: faces not mapped or no fluid region")

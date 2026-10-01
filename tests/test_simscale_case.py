@@ -89,3 +89,11 @@ def test_force_series_uses_the_total_force_over_the_last_fraction():
     assert len(s["fx"]) == 20 and s["fx"] == [1.0] * 20 and s["fz"] == [0.2] * 20
     se, drift = sc.force_mean_convergence(s["fx"])
     assert se == 0.0 and drift == 0.0
+
+
+def test_faces_by_label_joins_numbered_pieces():
+    # SimScale returns a solid in disconnected patches as "car#1", "car#2", ...
+    m = [{"name": f"F{i}", "originate_from": [{"path": [], "body": b, "entity": ""}]}
+         for i, b in enumerate(["car#1", "car#2", "inlet", "halo"])]
+    assert sc.faces_by_label(m, ["car", "inlet", "halo"]) == {
+        "car": ["F0", "F1"], "inlet": ["F2"], "halo": ["F3"]}
