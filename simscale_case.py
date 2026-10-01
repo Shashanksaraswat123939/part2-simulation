@@ -70,11 +70,12 @@ class SimScaleConfig:
     n_layers: int = 12
     fraction_from_end: float = 0.2     # force averaging window
     # The car goes to SimScale as one rebuilt surface (see solid_car): filled
-    # on a grid of `voxel_m`, crevices narrower than 2 x `close_m` sealed,
-    # resurfaced within `surface_tol_m`. All far below the 0.3-2 mm surface
-    # cells; the sealed crevices are glue-fillet sized.
+    # on a grid of `voxel_m`, air narrower than 2 x `close_m` sealed (the
+    # glue-line clearances of the printed parts in their pockets, 0.7-1.5 mm,
+    # which no mesh resolves and SimScale turned into a second region),
+    # resurfaced within `surface_tol_m` at facets of `facet_m`.
     voxel_m: float = 1.25e-4
-    close_m: float = 2.5e-4
+    close_m: float = 7.5e-4
     surface_tol_m: float = 3e-5
     facet_m: float = 1.0e-3            # triangle size of the rebuilt car surface
     poll_s: float = 15.0
@@ -225,8 +226,8 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
 
     The half parts do not meet the symmetry plane square-on (the body runs
     into it in a strip up to 0.14 mm off; mirrored, that is a groove the box
-    cut slices at a glancing angle: 30 slits, run 3). So within close_m of
-    the plane the cross-section at close_m is extruded straight through it,
+    cut slices at a glancing angle: 30 slits, run 3). So within three cells
+    of the plane the cross-section there is extruded straight through it,
     and on past the plane, which the box then cuts at exactly 90 degrees."""
     import manifold3d as m3
     from scipy import ndimage
@@ -236,8 +237,9 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
         return m3.Manifold(m3.Mesh(vert_properties=np.asarray(t.vertices, np.float32),
                                    tri_verts=np.asarray(t.faces, np.uint32)))
     h = cfg.voxel_m
-    r = max(1, int(round(cfg.close_m / h)))
-    pad = (r + 3) * h
+    r = 2                                        # ball radius, cells; iterated for the rest
+    n_close = max(1, int(round(cfg.close_m / (r * h))))
+    pad = (r * n_close + 3) * h
     U = m3.Manifold.batch_boolean([man(t) for t in parts.values()], m3.OpType.Add)
     b = U.bounding_box()
     lo, hi = np.array(b[:3]) - pad, np.array(b[3:]) + pad
@@ -247,11 +249,11 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     for k, z in enumerate(zs):
         for poly in U.slice(z).to_polygons():
             occ[:, :, k] ^= draw.polygon2mask((len(xs), len(ys)), (np.asarray(poly) - lo[:2]) / h - 0.5)
-    strip = ys < cfg.close_m
+    strip = ys < 3 * h                       # the 0.14 mm lip the half parts carry at the plane
     occ[:, strip, :] = occ[:, [np.argmax(~strip)], :]
     g = np.indices((2 * r + 1,) * 3) - r
     ball = (g ** 2).sum(0) <= r * r
-    occ = ndimage.binary_closing(occ, structure=ball)
+    occ = ndimage.binary_closing(occ, structure=ball, iterations=n_close)
     occ[:, strip, :] = occ[:, [np.argmax(~strip)], :]
     occ[:, :2, :] = False              # closed off beyond the plane, outside the box
     f = ndimage.gaussian_filter(occ.astype(np.float32), 0.7)
@@ -264,12 +266,28 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
         M = m3.Manifold(m3.Mesh(vert_properties=v, tri_verts=faces.astype(np.uint32)))
     # specks of a few cells are marching-cubes debris; real parts are far bigger
     keep = [m for m in M.decompose() if m.volume() > 1e-9]
-    M = m3.Manifold.batch_boolean(keep, m3.OpType.Add).simplify(cfg.surface_tol_m)
-    o = M.to_mesh()
-    v, faces = isotropic_remesh(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts), cfg.facet_m)
-    # Cut flush with the symmetry plane and the track here, where the slivers
-    # the cuts leave can still be collapsed (vertices on a plane stay on it),
-    # so the box boolean meets the car along existing edges.
+    o = m3.Manifold.batch_boolean(keep, m3.OpType.Add).to_mesh()
+    v, faces = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
+    # a first cut from millions of cell-sized facets to ~200k (quadric
+    # collapse; manifold's own simplify leaves 20 mm slivers and folds),
+    # then the remesh sets the facet size and shape
+    import fast_simplification
+    v, faces = fast_simplification.simplify(np.array(v, float), np.array(faces, np.int32),
+                                            target_reduction=max(0.0, 1 - 2e5 / len(faces)))
+    if _manifold(v, faces).status() != m3.Error.NoError:
+        o = _manifold(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)).simplify(
+            cfg.surface_tol_m).to_mesh()
+        v, faces = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
+    v, faces = isotropic_remesh(v, faces, cfg.facet_m)
+    # Cut flush with the symmetry plane and the track here, so the box boolean
+    # meets the car along existing edges. Vertices beside the symmetry plane
+    # go onto it first: the surface is a straight wall there (the extrusion),
+    # so that moves them along the surface, and the cut then passes through
+    # vertices instead of leaving slivers a hair above the plane. At the
+    # track the wheel is not a wall, so only the nearest vertices move.
+    v = np.array(v, float)
+    v[np.abs(v[:, 1]) < 2 * h, 1] = 0.0
+    v[np.abs(v[:, 2]) < 0.1 * cfg.facet_m, 2] = 0.0
     M = _manifold(v, faces).trim_by_plane((0, 1, 0), 0.0).trim_by_plane((0, 0, 1), 0.0)
     o = M.to_mesh()
     v, faces = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
@@ -289,6 +307,15 @@ def _manifold(v, f):
 
 def _tri_normals(v, f):
     return np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+
+
+def _min_angle(tri):
+    """Smallest corner angle of each triangle, radians; tri is (n, 3, 3)."""
+    e = np.stack([tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 1], tri[:, 0] - tri[:, 2]], axis=1)
+    L = np.maximum(np.linalg.norm(e, axis=2), 1e-300)
+    u = e / L[:, :, None]
+    cos = np.stack([-(u[:, 0] * u[:, 2]).sum(1), -(u[:, 1] * u[:, 0]).sum(1), -(u[:, 2] * u[:, 1]).sum(1)], axis=1)
+    return np.arccos(np.clip(cos, -1, 1)).min(1)
 
 
 def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None):
@@ -328,7 +355,16 @@ def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None):
             v2 = v[T]
             v2[T == a] = p
             n_new = np.cross(v2[:, 1] - v2[:, 0], v2[:, 2] - v2[:, 0])
-            if np.any(np.einsum("ij,ij->i", n_new, _tri_normals(v, f[moved])) <= 0):
+            n_old = _tri_normals(v, f[moved])
+            # no face turns over, none turns by more than 45 degrees unless it
+            # was degenerate (folds built up through several 80-degree turns),
+            # and none gets a corner under 3 degrees that was not already so
+            cosang = np.einsum("ij,ij->i", n_new, n_old) / np.maximum(
+                np.linalg.norm(n_new, axis=1) * np.linalg.norm(n_old, axis=1), 1e-300)
+            was_flat = np.linalg.norm(n_old, axis=1) < 1e-14
+            ok_turn = (cosang > 0.0) & ((cosang >= 0.7071) | was_flat)
+            ok_angle = _min_angle(v2) >= np.minimum(_min_angle(v[f[moved]]), np.radians(3.0))
+            if not (np.all(ok_turn) and np.all(ok_angle)):
                 continue
             v[a] = p
             pinned[a] = pinned[a] or pinned[b]
@@ -589,8 +625,11 @@ def _poll(get, done=("FINISHED", "SUCCESS"), failed=("FAILED", "ERROR", "CANCELE
         time.sleep(every)
 
 
-def import_geometry(api, stl_path: str, name: str, every: float = 15.0, improve: bool = True,
+def import_geometry(api, stl_path: str, name: str, every: float = 15.0, improve: bool = False,
                     sewing: bool = True) -> str:
+    """Upload and import one STL. `improve` is off: with it on, SimScale's
+    sewing left most of the boundary sheets unjoined (5 solids and 9 sheets
+    from 21 clean faces); off, every sheet sewed (1 Oct 2026 experiment)."""
     from simscale_sdk import (GeometryImportRequest, GeometryImportRequestLocation,
                               GeometryImportRequestOptions)
     storage = api["storage"].create_storage()
@@ -653,6 +692,16 @@ def region_names(api, geometry_id: str) -> list:
     res = api["geometries"].get_geometry_mappings(_project(), geometry_id, _class="region",
                                                   limit=100, page=1)
     return [e.to_dict().get("name", "") for e in (res.embedded or [])]
+
+
+def fluid_region(regions: list, faces: dict) -> str:
+    """The region of the body the inlet face belongs to (SimScale names
+    entities B<body>_TE<n>). Any other region is a sealed pocket."""
+    body = faces["inlet"][0].split("_")[0]
+    hit = [r for r in regions if r.split("_")[0] == body]
+    if len(hit) != 1:
+        raise SimScaleError(f"the inlet's body {body} is not one closed region: regions {regions}")
+    return hit[0]
 
 
 def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
@@ -841,6 +890,7 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     regions = region_names(api, geometry_id)
     print(f"[simscale] geometry {geometry_id}: {sum(map(len, faces.values()))} faces, "
           f"regions {regions}", flush=True)
+    regions = [fluid_region(regions, faces)]
     R = {s["name"]: s for s in cfg.extra_surfaces if s.get("rotating")}
     wheels = {n: (tuple(s["rotating"]["origin"]), float(s["rotating"]["omega"])) for n, s in R.items()}
     from simscale_sdk import MeshOperation, SimulationRun, SimulationSpec
@@ -960,5 +1010,8 @@ if __name__ == "__main__":
     if a.cmd == "probe":
         r = probe(str(run / "domain.stl"), names)
         print(json.dumps(r, indent=1, default=str))
-        if "_error" in r["mapped"] or len(r["regions"]) != 1:
-            raise SystemExit(f"probe: faces not mapped, or {len(r['regions'])} regions, not 1")
+        if "_error" in r["mapped"]:
+            raise SystemExit("probe: faces not mapped")
+        print("fluid region:", fluid_region(r["regions"], r["mapped"]))
+        if len(r["regions"]) != 1:
+            print(f"probe: {len(r['regions'])} regions; the extra ones are sealed pockets", flush=True)
