@@ -67,6 +67,13 @@ class SimScaleConfig:
     layer_growth: float = 1.2
     n_layers: int = 12
     fraction_from_end: float = 0.2     # force averaging window
+    # Geometry clean-up before the domain boolean (SimScale rejects "face
+    # slits": air layers of almost zero thickness). Features under
+    # `simplify_m` are removed from every part; stationary parts grow by
+    # `close_gap_m` so gaps under twice that close. Both are far below the
+    # 0.3-2 mm surface cells. Wheels are left exact (rotating walls).
+    simplify_m: float = 2e-5
+    close_gap_m: float = 5e-5
     poll_s: float = 15.0
     max_run_time_s: float = 36000.0
     extra_surfaces: tuple = ()
@@ -84,6 +91,11 @@ class SimScaleError(RuntimeError):
 
 
 OWN_PROJECT_NAME = "STEM Racing optimiser"
+# Per-part gap closing beyond SimScaleConfig.close_gap_m. The halo sits in a
+# pocket that follows its shape with ~0.1-0.3 mm clearance, and its CAD has
+# near-touching inner surfaces: 333 thin-air faces against the body and 41
+# against itself at 0.05 mm (measured 2026-10-01). For the CFD it is glued in.
+CLOSE_GAP_PART_M = {"halo": 2e-4}
 _PROJECT: Optional[str] = None          # the project in use (see _project)
 
 
@@ -145,6 +157,25 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
     def man(t):
         return m3.Manifold(m3.Mesh(vert_properties=np.asarray(t.vertices, np.float32),
                                    tri_verts=np.asarray(t.faces, np.uint32))).as_original()
+
+    rotating = {s_["name"] for s_ in cfg.extra_surfaces if s_.get("rotating")}
+    for n in list(parts):
+        t = parts[n]
+        if cfg.simplify_m > 0:
+            o = man(t).simplify(cfg.simplify_m).to_mesh()
+            t = trimesh.Trimesh(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts),
+                                process=False)
+        grow = max(cfg.close_gap_m, CLOSE_GAP_PART_M.get(n, 0.0)) if cfg.close_gap_m > 0 else 0.0
+        if grow > 0 and n not in rotating:
+            t = trimesh.Trimesh(t.vertices + t.vertex_normals * grow, t.faces, process=False)
+        # Each part is a right half closed on y = 0, exactly where the box's
+        # symmetry face is, and the half body's surface runs into that face in
+        # a strip of nearly flat triangles up to ~0.14 mm off it: both leave
+        # slivers. Every vertex within 0.2 mm of the plane goes through it so
+        # the boolean cuts cleanly.
+        v = np.array(t.vertices)
+        v[v[:, 1] < 2e-4, 1] = -max(cfg.close_gap_m, 5e-5)
+        parts[n] = trimesh.Trimesh(v, t.faces, process=False)
     lo, hi = domain_box(case_bounds(car_stl, cfg))
     box = man(trimesh.creation.box(bounds=[lo, hi]))
     owner = {box.original_id(): None}
@@ -169,6 +200,52 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
                      np.abs(c[:, 1] - hi[1]), np.abs(c[:, 2] - lo[2]), np.abs(c[:, 2] - hi[2])])
     labels[on_box] = np.array(BOX_FACES, dtype=object)[side.argmin(axis=0)]
     return fluid, labels, list(parts)
+
+
+def thin_air(fluid, labels, below_m: float = 1.5e-4) -> list:
+    """Places where the fluid is a thin sheet between two nearly parallel
+    walls (SimScale's "face slit"): ((x, y, z) mm, gap mm, label, label).
+    From each wall face a segment `below_m` long goes into the fluid; a face
+    it crosses that points back at it is the other side of a slit. Wedges
+    (wheel contact lines) meet at an angle and are not reported."""
+    walls = np.nonzero(~np.isin(labels, BOX_FACES))[0]
+    tri = fluid.triangles
+    nrm = fluid.face_normals                       # outward of the fluid: into the part
+    o = fluid.triangles_center[walls] - nrm[walls] * 1e-9
+    d = -nrm[walls]
+    e = o + d * below_m
+    tree = fluid.triangles_tree
+    pairs = []
+    for k in range(len(walls)):
+        lo, hi = np.minimum(o[k], e[k]), np.maximum(o[k], e[k])
+        for t in tree.intersection(np.r_[lo, hi]):
+            if t != walls[k] and nrm[t] @ nrm[walls[k]] < -0.9:
+                pairs.append((k, t))
+    out = []
+    if not pairs:
+        return out
+    P = np.array(pairs)
+    a, b, c = tri[P[:, 1], 0], tri[P[:, 1], 1], tri[P[:, 1], 2]
+    oo, dd = o[P[:, 0]], d[P[:, 0]]
+    e1, e2 = b - a, c - a                          # Moller-Trumbore, vectorised
+    h = np.cross(dd, e2)
+    det = np.einsum("ij,ij->i", e1, h)
+    ok = np.abs(det) > 1e-30
+    f = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+    sv = oo - a
+    u = f * np.einsum("ij,ij->i", sv, h)
+    q = np.cross(sv, e1)
+    v = f * np.einsum("ij,ij->i", dd, q)
+    tt = f * np.einsum("ij,ij->i", e2, q)
+    hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (tt > 0) & (tt < below_m)
+    best = {}
+    for (k, t), g, h_ in zip(pairs, tt, hit):
+        if h_ and (k not in best or g < best[k][0]):
+            best[k] = (g, t)
+    for k, (g, t) in best.items():
+        out.append((tuple(np.round(fluid.triangles_center[walls[k]] * 1e3, 3)), round(float(g) * 1e3, 4),
+                    labels[walls[k]], labels[t]))
+    return out
 
 
 def write_multisolid_stl(mesh, labels, path: str) -> list:
@@ -625,6 +702,8 @@ if __name__ == "__main__":
     cfg = SimScaleConfig(extra_surfaces=extra)
     fluid, labels, _p = build_domain(str(run / "body_half.stl"), cfg)
     names = write_multisolid_stl(fluid, labels, str(run / "domain.stl"))
-    print(json.dumps({"faces": len(fluid.faces), "closed": bool(fluid.is_watertight), "solids": names}))
+    slits = thin_air(fluid, labels)
+    print(json.dumps({"faces": len(fluid.faces), "closed": bool(fluid.is_watertight), "solids": names,
+                      "thin_air": slits[:20], "n_thin_air": len(slits)}, default=str))
     if a.cmd == "probe":
         print(json.dumps(probe(str(run / "domain.stl"), names), indent=1, default=str))
