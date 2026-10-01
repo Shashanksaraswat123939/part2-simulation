@@ -70,13 +70,13 @@ class SimScaleConfig:
     layer_growth: float = 1.2
     n_layers: int = 12
     fraction_from_end: float = 0.2     # force averaging window
-    # Geometry clean-up before the domain boolean (SimScale rejects "face
-    # slits": air layers of almost zero thickness). Features under
-    # `simplify_m` are removed from every part; stationary parts grow by
-    # `close_gap_m` so gaps under twice that close. Both are far below the
-    # 0.3-2 mm surface cells. Wheels are left exact (rotating walls).
-    simplify_m: float = 2e-5
-    close_gap_m: float = 5e-5
+    # The car goes to SimScale as one rebuilt surface (see solid_car): filled
+    # on a grid of `voxel_m`, crevices narrower than 2 x `close_m` sealed,
+    # resurfaced within `surface_tol_m`. All far below the 0.3-2 mm surface
+    # cells; the sealed crevices are glue-fillet sized.
+    voxel_m: float = 1.25e-4
+    close_m: float = 2.5e-4
+    surface_tol_m: float = 3e-5
     poll_s: float = 15.0
     max_run_time_s: float = 36000.0
     extra_surfaces: tuple = ()
@@ -94,17 +94,6 @@ class SimScaleError(RuntimeError):
 
 
 OWN_PROJECT_NAME = "STEM Racing optimiser"
-# Parts never grown along their normals: the halo CAD is too detailed (growing
-# it 0.2 mm folded it into itself: SimScale "face self_int" faults, probe 3,
-# 2026-10-01). As drawn it imports cleanly (probe 2).
-EXACT_PARTS = {"halo"}
-# The bodywork behind the halo leans in until it touches the halo's back face,
-# leaving a wedge of air 0-1.1 mm wide between two nearly parallel faces
-# (probe 4: 'fault-face-slit' at the halo's back, 2026-10-01). The halo's
-# last 3 mm are stretched this far back, into the bodywork. The stretch is
-# monotone in x, so no face turns over. ponytail: fixed length; if a car's
-# gap exceeds it, the probe says so.
-HALO_BACK_STRETCH_M = 1.2e-3
 _PROJECT: Optional[str] = None          # the project in use (see _project)
 
 
@@ -151,9 +140,8 @@ def frontal_area_half(car_stl: str) -> float:
 
 def build_domain(car_stl: str, cfg: SimScaleConfig):
     """(fluid mesh, face labels, part names). The fluid is the box minus the
-    union of every car part. The boolean library records which input every
-    output triangle came from, so each face is labelled exactly: box faces by
-    the side they lie on, the rest by their part."""
+    car rebuilt as one surface (solid_car). Box faces are labelled by the side
+    they lie on, car faces by the part whose surface is nearest."""
     import manifold3d as m3
     import trimesh
     parts = {"car": trimesh.load(str(car_stl), force="mesh")}
@@ -167,55 +155,14 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
         return m3.Manifold(m3.Mesh(vert_properties=np.asarray(t.vertices, np.float32),
                                    tri_verts=np.asarray(t.faces, np.uint32))).as_original()
 
-    rotating = {s_["name"] for s_ in cfg.extra_surfaces if s_.get("rotating")}
-    for n in list(parts):
-        t = parts[n]
-        if cfg.simplify_m > 0:
-            o = man(t).simplify(cfg.simplify_m).to_mesh()
-            t = trimesh.Trimesh(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts),
-                                process=False)
-        if n == "halo":
-            v = np.array(t.vertices)
-            x0 = v[:, 0].max() - 3e-3
-            v[:, 0] += HALO_BACK_STRETCH_M * np.clip((v[:, 0] - x0) / 3e-3, 0, 1)
-            t = trimesh.Trimesh(v, t.faces, process=False)
-        if cfg.close_gap_m > 0 and n not in rotating | EXACT_PARTS:
-            t = trimesh.Trimesh(t.vertices + t.vertex_normals * cfg.close_gap_m, t.faces,
-                                process=False)
-        # Each part is a right half closed on y = 0, exactly where the box's
-        # symmetry face is: coincident faces leave slivers. Parts grown above
-        # (and the half body, whose surface runs into that face in a strip of
-        # nearly flat triangles up to ~0.14 mm off it) have every vertex within
-        # 0.2 mm of the plane moved through it. An exact part, whose closing
-        # face is exactly flat, is moved through the plane whole instead:
-        # moving only its curved surface turns faces over (9 on the halo), and
-        # joining it to its mirror image left the closing face inside it
-        # (probe 6).
-        if n in EXACT_PARTS:
-            t = trimesh.Trimesh(t.vertices - [0.0, max(cfg.close_gap_m, 5e-5), 0.0], t.faces,
-                                process=False)
-        else:
-            v = np.array(t.vertices)
-            v[v[:, 1] < 2e-4, 1] = -max(cfg.close_gap_m, 5e-5)
-            t = trimesh.Trimesh(v, t.faces, process=False)
-        parts[n] = t
+    car = solid_car(parts, cfg)
     lo, hi = domain_box(case_bounds(car_stl, cfg))
     box = man(trimesh.creation.box(bounds=[lo, hi]))
-    owner = {box.original_id(): None}
-    solids = []
-    for n, t in parts.items():
-        mm = man(t)
-        owner[mm.original_id()] = n
-        solids.append(mm)
-    fluid_m = box - m3.Manifold.batch_boolean(solids, m3.OpType.Add)
+    owner = {box.original_id(): None, car.original_id(): "__car__"}
+    fluid_m = box - car
     # Air the car seals in (the cockpit under the halo, 651 mm3 on the start
     # car) is a region of its own to SimScale and plays no part in the flow.
-    fluid_m = max(fluid_m.decompose(), key=lambda m: m.volume())
-    # Edges of a few microns (where cuts pass near vertices) make SimScale
-    # split faces into pieces it cannot sew back (probes 7-9, 2026-10-01).
-    # Manifold collapses them inside each face; collapse_short_edges below
-    # does the ones on face boundaries.
-    fluid_m = fluid_m.set_tolerance(TIDY_M)
+    fluid_m = max(fluid_m.decompose(), key=lambda m: m.volume()).simplify(cfg.surface_tol_m)
     out = fluid_m.to_mesh()
     fluid = trimesh.Trimesh(np.asarray(out.vert_properties)[:, :3], np.asarray(out.tri_verts),
                             process=False)
@@ -230,70 +177,70 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
     side = np.stack([np.abs(c[:, 0] - lo[0]), np.abs(c[:, 0] - hi[0]), np.abs(c[:, 1] - lo[1]),
                      np.abs(c[:, 1] - hi[1]), np.abs(c[:, 2] - lo[2]), np.abs(c[:, 2] - hi[2])])
     labels[on_box] = np.array(BOX_FACES, dtype=object)[side.argmin(axis=0)]
-    fluid, labels = collapse_short_edges(fluid, labels, TIDY_M)
+    on_car = np.nonzero(labels == "__car__")[0]
+    labels[on_car] = nearest_part(parts, fluid.triangles_center[on_car])
     return fluid, labels, list(parts)
 
 
-TIDY_M = 2e-5     # far below the 0.3-2 mm surface cells
+def solid_car(parts: dict, cfg: SimScaleConfig):
+    """Every part as one closed, smooth surface (a manifold3d Manifold).
+
+    The parts are separate closed surfaces that meet at near-tangent angles
+    and micron gaps; SimScale cannot sew the resulting domain (slits, face
+    intersections, micron edges and stalled imports, probes 2-10, 2026-10-01).
+    So the union is filled on a grid (each slice even-odd, so a micron crack
+    never holds a cell centre), crevices narrower than 2 x close_m are sealed,
+    and the surface is rebuilt by marching cubes and simplified. The half car
+    is mirrored first, so the surface crosses the symmetry plane square and
+    the box cuts it cleanly there."""
+    import manifold3d as m3
+    from scipy import ndimage
+    from skimage import draw, measure
+
+    def man(t):
+        return m3.Manifold(m3.Mesh(vert_properties=np.asarray(t.vertices, np.float32),
+                                   tri_verts=np.asarray(t.faces, np.uint32)))
+    h = cfg.voxel_m
+    r = max(1, int(round(cfg.close_m / h)))
+    pad = (r + 3) * h
+    U = m3.Manifold.batch_boolean([man(t) for t in parts.values()], m3.OpType.Add)
+    U = (U + U.mirror((0, 1, 0))).trim_by_plane((0, 1, 0), -pad)
+    b = U.bounding_box()
+    lo, hi = np.array(b[:3]) - pad, np.array(b[3:]) + pad
+    xs, ys, zs = (np.arange(lo[k] + h / 2, hi[k], h) for k in range(3))
+    occ = np.zeros((len(xs), len(ys), len(zs)), bool)
+    for k, z in enumerate(zs):
+        for poly in U.slice(z).to_polygons():
+            occ[:, :, k] ^= draw.polygon2mask((len(xs), len(ys)), (np.asarray(poly) - lo[:2]) / h - 0.5)
+    g = np.indices((2 * r + 1,) * 3) - r
+    ball = (g ** 2).sum(0) <= r * r
+    occ = ndimage.binary_closing(occ, structure=ball)
+    f = ndimage.gaussian_filter(occ.astype(np.float32), 0.7)
+    del occ
+    v, faces, _n, _ = measure.marching_cubes(f, 0.5)
+    del f
+    v = (v * h + lo + h / 2).astype(np.float32)
+    M = m3.Manifold(m3.Mesh(vert_properties=v, tri_verts=faces[:, ::-1].astype(np.uint32)))
+    if M.volume() < 0:
+        M = m3.Manifold(m3.Mesh(vert_properties=v, tri_verts=faces.astype(np.uint32)))
+    # specks of a few cells are marching-cubes debris; real parts are far bigger
+    keep = [m for m in M.decompose() if m.volume() > 1e-9]
+    M = m3.Manifold.batch_boolean(keep, m3.OpType.Add).simplify(cfg.surface_tol_m)
+    return M.as_original()
 
 
-def collapse_short_edges(mesh, labels, tol: float, passes: int = 20):
-    """Remove edges shorter than `tol` by moving one end onto the other. A
-    vertex on the line between two labelled faces moves only along that line;
-    a vertex where three or more meet never moves; a move that would turn a
-    face over, or join two parts of the surface that only the edge's own two
-    faces join, is skipped. Labels stay with their faces."""
+def nearest_part(parts: dict, points) -> np.ndarray:
+    """The name of the part whose surface is nearest each point."""
     import trimesh
-    V = np.array(mesh.vertices)
-    F = np.array(mesh.faces)
-    lab = np.asarray(labels)
-    for _ in range(passes):
-        vf = [[] for _ in range(len(V))]
-        for i, t in enumerate(F):
-            for v in t:
-                vf[v].append(i)
-        kind = [set(lab[f]) for f in vf]
-        e = np.sort(np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]]), axis=1)
-        e = np.unique(e, axis=0)
-        ln = np.linalg.norm(V[e[:, 0]] - V[e[:, 1]], axis=1)
-        short = e[np.argsort(ln)][np.sort(ln) < tol]
-        if not len(short):
-            break
-        nrm = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
-        touched, dead, done = set(), np.zeros(len(F), bool), 0
-        for a, b in short:
-            if a in touched or b in touched:
-                continue
-            both = [f for f in vf[a] if b in F[f]]
-            if len(both) != 2:
-                continue
-            on_line = lab[both[0]] != lab[both[1]]
-            for keep, gone in ((a, b), (b, a)):
-                kg = kind[gone]
-                if len(kg) >= 3 or (len(kg) == 2 and not (on_line and kg <= kind[keep])):
-                    continue
-                ring_k = {v for f in vf[keep] for v in F[f]} - {keep}
-                ring_g = {v for f in vf[gone] for v in F[f]} - {gone}
-                opp = {v for f in both for v in F[f]} - {a, b}
-                if ring_k & ring_g != opp:
-                    continue
-                moved = [f for f in vf[gone] if f not in both]
-                T = F[moved].copy()
-                T[T == gone] = keep
-                n2 = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])
-                if np.any(np.einsum("ij,ij->i", n2, nrm[moved]) <= 0):
-                    continue
-                F[moved] = T
-                dead[both] = True
-                touched |= ring_k | ring_g | {a, b}
-                done += 1
-                break
-        if not done:
-            break
-        F, lab = F[~dead], lab[~dead]
-    out = trimesh.Trimesh(V, F, process=False)
-    out.remove_unreferenced_vertices()
-    return out, lab
+    from scipy.spatial import cKDTree
+    pts, names = [], []
+    for n, t in parts.items():
+        # ~0.1 mm spacing: label boundaries land within a cell of the true junction
+        k = int(max(2000, t.area / 1e-8))
+        pts.append(trimesh.sample.sample_surface(t, k, seed=0)[0])
+        names += [n] * k
+    _d, idx = cKDTree(np.vstack(pts)).query(points)
+    return np.array(names, dtype=object)[idx]
 
 
 def thin_air(fluid, labels, below_m: float = 1.5e-4) -> list:

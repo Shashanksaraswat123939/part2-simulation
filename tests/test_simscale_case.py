@@ -37,10 +37,11 @@ def test_domain_is_one_closed_fluid_with_every_boundary_labelled():
         lo, hi = sc.domain_box(sc.case_bounds(car, cfg))
         box_v = np.prod(np.array(hi) - np.array(lo))
         assert fluid.volume < box_v and fluid.volume > 0.99 * box_v
-        # wheel faces sit on the wheel: within its radius of the axle
+        # wheel faces sit on the wheel: within its radius of the axle, give or
+        # take the grid the car is rebuilt on
         c = fluid.triangles_center[labels == "wheelF"]
         r = np.hypot(c[:, 0] - 0.046, c[:, 2] - 0.0137)
-        assert r.max() < 0.0141
+        assert r.max() < 0.014 + 2 * cfg.voxel_m
         names = sc.write_multisolid_stl(fluid, labels, f"{td}/domain.stl")
         txt = Path(f"{td}/domain.stl").read_text()
         assert names[:6] == list(sc.BOX_FACES) and txt.count("solid ") == 2 * len(names)
