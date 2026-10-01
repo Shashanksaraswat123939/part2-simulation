@@ -180,21 +180,21 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
             t = trimesh.Trimesh(t.vertices + t.vertex_normals * cfg.close_gap_m, t.faces,
                                 process=False)
         # Each part is a right half closed on y = 0, exactly where the box's
-        # symmetry face is, and the half body's surface runs into that face in
-        # a strip of nearly flat triangles up to ~0.14 mm off it: both leave
-        # slivers. Every vertex within 0.2 mm of the plane goes through it so
-        # the boolean cuts cleanly. A vertex whose move would turn a face over
-        # (a curved surface meeting the plane: halo, 2026-10-01) stays put.
-        snap = t.vertices[:, 1] < 2e-4
-        while True:
+        # symmetry face is: coincident faces leave slivers. Parts grown above
+        # (and the half body, whose surface runs into that face in a strip of
+        # nearly flat triangles up to ~0.14 mm off it) have every vertex within
+        # 0.2 mm of the plane moved through it. An exact part is joined to its
+        # mirror image instead: moving its curved surface flat turns faces over
+        # (9 on the halo), and its closing face, being exact, simply vanishes.
+        if n in EXACT_PARTS and t.vertices[:, 1].min() < 1e-6:
+            o = (man(t) + man(t).mirror((0, 1, 0))).to_mesh()
+            t = trimesh.Trimesh(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts),
+                                process=False)
+        else:
             v = np.array(t.vertices)
-            v[snap, 1] = -max(cfg.close_gap_m, 5e-5)
-            moved = trimesh.Trimesh(v, t.faces, process=False)
-            flip = (moved.face_normals * t.face_normals).sum(1) < 0
-            if not flip.any():
-                break
-            snap[t.faces[flip].ravel()] = False
-        parts[n] = moved
+            v[v[:, 1] < 2e-4, 1] = -max(cfg.close_gap_m, 5e-5)
+            t = trimesh.Trimesh(v, t.faces, process=False)
+        parts[n] = t
     lo, hi = domain_box(case_bounds(car_stl, cfg))
     box = man(trimesh.creation.box(bounds=[lo, hi]))
     owner = {box.original_id(): None}
