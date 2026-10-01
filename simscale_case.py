@@ -250,12 +250,23 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
         for poly in U.slice(z).to_polygons():
             occ[:, :, k] ^= draw.polygon2mask((len(xs), len(ys)), (np.asarray(poly) - lo[:2]) / h - 0.5)
     strip = ys < 3 * h                       # the 0.14 mm lip the half parts carry at the plane
-    occ[:, strip, :] = occ[:, [np.argmax(~strip)], :]
+    # The wheels sink 0.3 mm into the track; where a tyre shoulder meets it
+    # the two surfaces are nearly tangent, which SimScale reports as a bad
+    # face-face contact (probe 13). The cross-section 3 cells up is extruded
+    # down through the track, so each wheel stands on a small step and meets
+    # the track at 90 degrees (the usual contact-patch treatment).
+    step = zs < 3 * h
+
+    def extrude(o):
+        o[:, strip, :] = o[:, [np.argmax(~strip)], :]
+        o[:, :, step] = o[:, :, [np.argmax(~step)]]
+        return o
+    occ = extrude(occ)
     g = np.indices((2 * r + 1,) * 3) - r
     ball = (g ** 2).sum(0) <= r * r
-    occ = ndimage.binary_closing(occ, structure=ball, iterations=n_close)
-    occ[:, strip, :] = occ[:, [np.argmax(~strip)], :]
-    occ[:, :2, :] = False              # closed off beyond the plane, outside the box
+    occ = extrude(ndimage.binary_closing(occ, structure=ball, iterations=n_close))
+    occ[:, :2, :] = False              # closed off beyond the plane and below the
+    occ[:, :, :2] = False              # track, both outside the box
     f = ndimage.gaussian_filter(occ.astype(np.float32), 0.7)
     del occ
     v, faces, _n, _ = measure.marching_cubes(f, 0.5)
@@ -287,7 +298,7 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     # track the wheel is not a wall, so only the nearest vertices move.
     v = np.array(v, float)
     v[np.abs(v[:, 1]) < 2 * h, 1] = 0.0
-    v[np.abs(v[:, 2]) < 0.1 * cfg.facet_m, 2] = 0.0
+    v[np.abs(v[:, 2]) < 2 * h, 2] = 0.0
     M = _manifold(v, faces).trim_by_plane((0, 1, 0), 0.0).trim_by_plane((0, 0, 1), 0.0)
     o = M.to_mesh()
     v, faces = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
