@@ -653,6 +653,8 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     (work / "simscale.json").write_text(json.dumps(ids, indent=1))
     faces = faces_by_label(face_mapping(api, geometry_id), names)
     regions = region_names(api, geometry_id)
+    print(f"[simscale] geometry {geometry_id}: {sum(map(len, faces.values()))} faces, "
+          f"regions {regions}", flush=True)
     R = {s["name"]: s for s in cfg.extra_surfaces if s.get("rotating")}
     wheels = {n: (tuple(s["rotating"]["origin"]), float(s["rotating"]["omega"])) for n, s in R.items()}
     from simscale_sdk import MeshOperation, SimulationRun, SimulationSpec
@@ -675,11 +677,13 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     except Exception:  # noqa: BLE001 -- statistics are a report, not a result
         pass
     ids.update(simulation_id=sim_id, mesh_id=mesh_op.mesh_id, cells=cells)
+    print(f"[simscale] mesh {mesh_op.mesh_id}: {cells} cells; solving", flush=True)
     (work / "simscale.json").write_text(json.dumps(ids, indent=1))
     run = api["runs"].create_simulation_run(_project(), sim_id, SimulationRun(name="run"))
     api["runs"].start_simulation_run(_project(), sim_id, run.run_id)
     _poll(lambda: api["runs"].get_simulation_run(_project(), sim_id, run.run_id),
           every=cfg.poll_s, what="run")
+    print(f"[simscale] run {run.run_id} finished", flush=True)
     parts = [n for n in faces if n not in BOX_FACES]
     groups = read_forces(api, sim_id, run.run_id, parts, cfg.fraction_from_end)
     if not groups:
