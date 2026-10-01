@@ -590,7 +590,8 @@ def _poll(get, done=("FINISHED", "SUCCESS"), failed=("FAILED", "ERROR", "CANCELE
         time.sleep(every)
 
 
-def import_geometry(api, stl_path: str, name: str, every: float = 15.0) -> str:
+def import_geometry(api, stl_path: str, name: str, every: float = 15.0, improve: bool = True,
+                    sewing: bool = True) -> str:
     from simscale_sdk import (GeometryImportRequest, GeometryImportRequestLocation,
                               GeometryImportRequestOptions)
     storage = api["storage"].create_storage()
@@ -601,7 +602,7 @@ def import_geometry(api, stl_path: str, name: str, every: float = 15.0) -> str:
         _project(), GeometryImportRequest(
             name=name, location=GeometryImportRequestLocation(storage_id=storage.storage_id),
             format="STL", input_unit="m",
-            options=GeometryImportRequestOptions(facet_split=False, sewing=True, improve=True,
+            options=GeometryImportRequestOptions(facet_split=False, sewing=sewing, improve=improve,
                                                  optimize_for_lbm_solver=False))))
     try:
         # an import takes ~20 s; one sat at "Sewing 0 of 35 bodies" for 10+ min (2026-10-01)
@@ -901,10 +902,42 @@ def probe(domain_stl: str, names: list) -> dict:
             "mapped": by}
 
 
+def probe_variants(fluid, labels, workdir: str) -> list:
+    """The same fluid mesh imported with its faces grouped several ways, to
+    see where SimScale's sewing stops joining them (probe 12: 21 clean
+    faces, no faults, yet 5 solids and 9 sheets). Free: no mesh, no run."""
+    labels = np.asarray(labels)
+    box = np.isin(labels, BOX_FACES)
+    one = np.where(box, "box", "car")
+    grouped = {"one": np.full(len(labels), "fluid", dtype=object),
+               "car_box": one.astype(object),
+               "box6_car1": np.where(box, labels, "car").astype(object),
+               "all": labels}
+    api = _clients()
+    out = []
+    for name, lab in grouped.items():
+        for improve in ((True, False) if name == "all" else (True,)):
+            path = str(Path(workdir) / f"variant_{name}.stl")
+            names = write_multisolid_stl(fluid, lab, path)
+            tag = f"variant_{name}{'' if improve else '_noimprove'}_{int(time.time())}"
+            print(f"[variant] {tag}: {len(names)} solids", flush=True)
+            try:
+                gid = import_geometry(api, path, tag, improve=improve)
+                maps = face_mapping(api, gid)
+                regions = region_names(api, gid)
+                bodies = sorted({m["name"].split("_")[0] for m in maps})
+                res = {"variant": tag, "faces": len(maps), "bodies": len(bodies), "regions": len(regions)}
+            except SimScaleError as exc:
+                res = {"variant": tag, "error": str(exc)[:300]}
+            print(f"[variant] {res}", flush=True)
+            out.append(res)
+    return out
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="SimScale checks that cost no core hours")
-    ap.add_argument("cmd", choices=("domain", "probe"))
+    ap.add_argument("cmd", choices=("domain", "probe", "variants"))
     ap.add_argument("run_dir", help="a run_car output folder (body_half.stl, parts/)")
     a = ap.parse_args()
     run = Path(a.run_dir)
@@ -917,6 +950,8 @@ if __name__ == "__main__":
     slits = thin_air(fluid, labels)
     print(json.dumps({"faces": len(fluid.faces), "closed": bool(fluid.is_watertight), "solids": names,
                       "thin_air": slits[:20], "n_thin_air": len(slits)}, default=str))
+    if a.cmd == "variants":
+        print(json.dumps(probe_variants(fluid, labels, str(run)), indent=1))
     if a.cmd == "probe":
         r = probe(str(run / "domain.stl"), names)
         print(json.dumps(r, indent=1, default=str))
