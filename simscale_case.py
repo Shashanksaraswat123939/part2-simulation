@@ -70,14 +70,17 @@ class SimScaleConfig:
     n_layers: int = 12
     fraction_from_end: float = 0.2     # force averaging window
     # The car goes to SimScale as one rebuilt surface (see solid_car): filled
-    # on a grid of `voxel_m`, air narrower than 2 x `close_m` sealed (the
-    # glue-line clearances of the printed parts in their pockets, 0.7-1.5 mm,
-    # which no mesh resolves and SimScale turned into a second region),
-    # resurfaced within `surface_tol_m` at facets of `facet_m`.
+    # on a grid of `voxel_m`; crevices narrower than 2 x `close_m` sealed;
+    # air narrower than 2 x `glue_m` BETWEEN two different stationary parts
+    # sealed too (the glue-line clearances of the printed parts in their
+    # pockets, 0.7-1.5 mm, which no mesh resolves and SimScale turned into a
+    # second region) while each part keeps its own openings and edges;
+    # resurfaced at facets of `facet_m` with creases kept sharp.
     voxel_m: float = 1.25e-4
-    close_m: float = 7.5e-4
+    close_m: float = 2.5e-4
+    glue_m: float = 7.5e-4
     surface_tol_m: float = 3e-5
-    facet_m: float = 1.0e-3            # triangle size of the rebuilt car surface
+    facet_m: float = 5.0e-4            # triangle size of the rebuilt car surface
     poll_s: float = 15.0
     max_run_time_s: float = 36000.0
     extra_surfaces: tuple = ()
@@ -95,6 +98,7 @@ class SimScaleError(RuntimeError):
 
 
 OWN_PROJECT_NAME = "STEM Racing optimiser"
+FORCE_GROUP = "car"                    # the one force plot: every car face, wheels included
 _PROJECT: Optional[str] = None          # the project in use (see _project)
 
 
@@ -239,7 +243,8 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     h = cfg.voxel_m
     r = 2                                        # ball radius, cells; iterated for the rest
     n_close = max(1, int(round(cfg.close_m / (r * h))))
-    pad = (r * n_close + 3) * h
+    n_glue = max(n_close, int(round(cfg.glue_m / (r * h))))
+    pad = (r * n_glue + 3) * h
     U = m3.Manifold.batch_boolean([man(t) for t in parts.values()], m3.OpType.Add)
     b = U.bounding_box()
     lo, hi = np.array(b[:3]) - pad, np.array(b[3:]) + pad
@@ -264,6 +269,24 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     occ = extrude(occ)
     g = np.indices((2 * r + 1,) * 3) - r
     ball = (g ** 2).sum(0) <= r * r
+    # Glue lines: cells a wide closing would fill, kept only where two
+    # different stationary parts are both within glue_m (a wheel is never
+    # glued, and a part's own slots and corners are left alone).
+    if n_glue > n_close:
+        from scipy.spatial import cKDTree
+        import trimesh
+        idx = np.argwhere(ndimage.binary_closing(occ, structure=ball, iterations=n_glue) & ~occ)
+        pts = idx * h + (lo + h / 2)
+        rotating = {s_["name"] for s_ in cfg.extra_surfaces if s_.get("rotating")}
+        near = np.zeros(len(pts), np.int8)
+        for n, t in parts.items():
+            if n in rotating:
+                continue
+            smp = trimesh.sample.sample_surface(t, int(max(2000, t.area / 4e-8)), seed=0)[0]
+            d, _i = cKDTree(smp).query(pts, distance_upper_bound=cfg.glue_m + 2 * h)
+            near += np.isfinite(d)
+        glue = idx[near >= 2]
+        occ[glue[:, 0], glue[:, 1], glue[:, 2]] = True
     occ = extrude(ndimage.binary_closing(occ, structure=ball, iterations=n_close))
     occ[:, :2, :] = False              # closed off beyond the plane and below the
     occ[:, :, :2] = False              # track, both outside the box
@@ -279,12 +302,12 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     keep = [m for m in M.decompose() if m.volume() > 1e-9]
     o = m3.Manifold.batch_boolean(keep, m3.OpType.Add).to_mesh()
     v, faces = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
-    # a first cut from millions of cell-sized facets to ~200k (quadric
+    # a first cut from millions of cell-sized facets to ~400k (quadric
     # collapse; manifold's own simplify leaves 20 mm slivers and folds),
     # then the remesh sets the facet size and shape
     import fast_simplification
     v, faces = fast_simplification.simplify(np.array(v, float), np.array(faces, np.int32),
-                                            target_reduction=max(0.0, 1 - 2e5 / len(faces)))
+                                            target_reduction=max(0.0, 1 - 4e5 / len(faces)))
     if _manifold(v, faces).status() != m3.Error.NoError:
         o = _manifold(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)).simplify(
             cfg.surface_tol_m).to_mesh()
@@ -303,7 +326,8 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     o = M.to_mesh()
     v, faces = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
     pinned = (np.abs(v[:, 1]) < 1e-9) | (np.abs(v[:, 2]) < 1e-9)
-    v, faces = collapse_short_edges(v, faces, 0.4 * cfg.facet_m, pinned=pinned)
+    v, faces = collapse_short_edges(v, faces, 0.4 * cfg.facet_m, pinned=pinned, keep_features=False)
+    faces = flip_caps(v, faces)
     M = _manifold(v, faces)
     if M.status() != m3.Error.NoError:
         raise SimScaleError(f"rebuilt car surface: {M.status()}")
@@ -329,12 +353,36 @@ def _min_angle(tri):
     return np.arccos(np.clip(cos, -1, 1)).min(1)
 
 
-def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None):
-    """Edges shorter than `tol` collapse to their midpoint, or onto the
-    `pinned` end if one end is pinned (a vertex on a cut plane stays on it;
-    two pinned ends collapse to their midpoint, which is on the plane too).
-    A collapse is skipped if it would pinch the surface (link condition) or
-    turn a face over. Returns new (vertices, faces)."""
+FEATURE_DEG = 70.0     # a crease sharper than this is a feature the remesh keeps
+#                        (below ~50 the marching-cubes texture counts as creases)
+
+
+def _features(v, f, deg=None):
+    """(feature vertex mask, set of feature edges): edges whose two faces
+    meet at more than `deg` (wheel rims, plate edges, the halo's bars)."""
+    deg = FEATURE_DEG if deg is None else deg
+    n = _tri_normals(v, f)
+    n /= np.maximum(np.linalg.norm(n, axis=1), 1e-300)[:, None]
+    e = np.sort(np.vstack([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+    face = np.tile(np.arange(len(f)), 3)
+    order = np.lexsort((e[:, 1], e[:, 0]))
+    e, face = e[order], face[order]
+    pair = np.all(e[:-1] == e[1:], axis=1)
+    sharp = pair & (np.einsum("ij,ij->i", n[face[:-1]], n[face[1:]]) < np.cos(np.radians(deg)))
+    fe = e[:-1][sharp]
+    mask = np.zeros(len(v), bool)
+    mask[fe.ravel()] = True
+    return mask, set(map(tuple, fe))
+
+
+def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None, keep_features: bool = True):
+    """Edges shorter than `tol` collapse. Where the ends differ in rank
+    (pinned on a cut plane > on a feature crease > free) the edge collapses
+    onto the higher end, so planes stay flat and creases stay sharp; equal
+    ends meet at the midpoint. Two crease vertices collapse only along their
+    crease. A collapse is skipped if it would pinch the surface (link
+    condition), turn a face past 45 degrees, or make a corner under 3 degrees
+    that was not one already. Returns new (vertices, faces)."""
     v, f = np.array(v, float), np.array(f)
     pinned = np.zeros(len(v), bool) if pinned is None else np.array(pinned, bool)
     for _ in range(passes):
@@ -344,6 +392,8 @@ def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None):
         short = E[order][ln[order] < tol]
         if not len(short):
             break
+        feat, fedges = _features(v, f) if keep_features else (np.zeros(len(v), bool), set())
+        rank = np.where(pinned, 2, np.where(feat, 1, 0))
         vf = [[] for _ in range(len(v))]
         for i, t in enumerate(f):
             for w in t:
@@ -351,6 +401,8 @@ def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None):
         touched, dead, done = set(), np.zeros(len(f), bool), 0
         for a, b in short:
             if a in touched or b in touched:
+                continue
+            if feat[a] and feat[b] and not (pinned[a] or pinned[b]) and (a, b) not in fedges:
                 continue
             both = [i for i in vf[a] if b in f[i]]
             if len(both) != 2:
@@ -362,19 +414,18 @@ def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None):
             moved = [i for i in set(vf[a]) | set(vf[b]) if i not in both]
             T = f[moved].copy()
             T[T == b] = a
-            p = v[a] if pinned[a] and not pinned[b] else v[b] if pinned[b] and not pinned[a]                 else 0.5 * (v[a] + v[b])
+            p = v[a] if rank[a] > rank[b] else v[b] if rank[b] > rank[a] else 0.5 * (v[a] + v[b])
             v2 = v[T]
             v2[T == a] = p
             n_new = np.cross(v2[:, 1] - v2[:, 0], v2[:, 2] - v2[:, 0])
             n_old = _tri_normals(v, f[moved])
-            # no face turns over, none turns by more than 45 degrees unless it
-            # was degenerate (folds built up through several 80-degree turns),
-            # and none gets a corner under 3 degrees that was not already so
             cosang = np.einsum("ij,ij->i", n_new, n_old) / np.maximum(
                 np.linalg.norm(n_new, axis=1) * np.linalg.norm(n_old, axis=1), 1e-300)
             was_flat = np.linalg.norm(n_old, axis=1) < 1e-14
             ok_turn = (cosang > 0.0) & ((cosang >= 0.7071) | was_flat)
-            ok_angle = _min_angle(v2) >= np.minimum(_min_angle(v[f[moved]]), np.radians(3.0))
+            # (a face wholly on a cut plane is the cut's own cap, which the box
+            # boolean discards: its corners do not matter)
+            ok_angle = (_min_angle(v2) >= np.minimum(_min_angle(v[f[moved]]), np.radians(3.0)))                 | np.all(pinned[T], axis=1)
             if not (np.all(ok_turn) and np.all(ok_angle)):
                 continue
             v[a] = p
@@ -392,10 +443,58 @@ def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None):
     return v[used], remap[f]
 
 
+def flip_caps(v, f, cap_deg: float = 150.0, passes: int = 3):
+    """A 'cap' triangle (one corner over `cap_deg`, its vertex almost on the
+    opposite edge) has no short edge to collapse; its long edge is flipped
+    instead, when that leaves both new triangles with better corners, turns
+    neither over and makes no duplicate edge. Returns new faces."""
+    v, f = np.asarray(v, float), np.array(f)
+    for _ in range(passes):
+        tri = v[f]
+        e = np.stack([tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 1], tri[:, 0] - tri[:, 2]], axis=1)
+        u = e / np.maximum(np.linalg.norm(e, axis=2), 1e-300)[:, :, None]
+        cos = np.stack([-(u[:, 0] * u[:, 2]).sum(1), -(u[:, 1] * u[:, 0]).sum(1), -(u[:, 2] * u[:, 1]).sum(1)], axis=1)
+        caps = np.nonzero(cos.min(1) < np.cos(np.radians(cap_deg)))[0]
+        if not len(caps):
+            break
+        edge_faces = {}
+        for i, t in enumerate(f):
+            for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+                edge_faces.setdefault((min(a, b), max(a, b)), []).append(i)
+        done, used = 0, set()
+        for i in caps:
+            if i in used:
+                continue
+            k = int(cos[i].argmin())                      # the obtuse corner
+            c, a, b = f[i][k], f[i][(k + 1) % 3], f[i][(k + 2) % 3]
+            other = [j for j in edge_faces.get((min(a, b), max(a, b)), []) if j != i]
+            if len(other) != 1 or other[0] in used:
+                continue
+            j = other[0]
+            d = [w for w in f[j] if w != a and w != b]
+            if len(d) != 1 or (min(c, d[0]), max(c, d[0])) in edge_faces:
+                continue
+            d = d[0]
+            new = np.array([[c, a, d], [c, d, b]])
+            n_new = _tri_normals(v, new)
+            n_old = _tri_normals(v, f[[i, j]])
+            if np.any(n_new @ n_old.sum(0) <= 0) or np.any(np.linalg.norm(n_new, axis=1) < 1e-18):
+                continue
+            if _min_angle(v[new]).min() <= _min_angle(v[f[[i, j]]]).min():
+                continue
+            f[i], f[j] = new
+            used |= {i, j}
+            done += 1
+        if not done:
+            break
+    return f
+
+
 def tangential_smooth(v, f, iters: int = 3, lam: float = 0.5):
     """Move each vertex toward the mean of its neighbours, along its tangent
-    plane only (the shape stays, the triangles even out). A move that would
-    turn a face over is dropped."""
+    plane only (the shape stays, the triangles even out). Vertices on a
+    feature crease stay where they are, and a move that would turn a face
+    over is dropped."""
     from scipy import sparse
     v = np.array(v, float)
     E = np.vstack([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
@@ -410,6 +509,7 @@ def tangential_smooth(v, f, iters: int = 3, lam: float = 0.5):
         vn /= np.maximum(np.linalg.norm(vn, axis=1), 1e-30)[:, None]
         d = (A @ v) / deg[:, None] - v
         d -= np.einsum("ij,ij->i", d, vn)[:, None] * vn
+        d[_features(v, f)[0]] = 0.0
         v2 = v + lam * d
         bad = np.einsum("ij,ij->i", _tri_normals(v2, f), n0) <= 0
         v2[np.unique(f[bad])] = v[np.unique(f[bad])]
@@ -428,7 +528,10 @@ def isotropic_remesh(v, f, length: float, passes: int = 3):
         v, f = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
         v, f = collapse_short_edges(v, f, 0.6 * length)
         v = tangential_smooth(v, f)
-    return v, f
+    # what the creases kept from collapsing: edges under a third of the facet
+    # go regardless (a move of at most a sixth of a facet), and caps are flipped
+    v, f = collapse_short_edges(v, f, 0.3 * length, keep_features=False)
+    return v, flip_caps(v, f)
 
 
 def nearest_part(parts: dict, points) -> np.ndarray:
@@ -763,11 +866,13 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
             v = NoSlipVBC()
         bcs.append(WallBC(name=n, velocity=v, topological_reference=topo(n)))
     cor = DimensionalVectorLength(value=DecimalVector(x=x_moment_m, y=0.0, z=0.0), unit="m")
-    # one force history per part, every iteration; the averaging window is
-    # applied when the series is read (fraction_from_end is Pacefish-only)
+    # ONE force history for the whole car, wheels included (team decision
+    # 2026-10-01: the parts act on each other, so the car is judged whole),
+    # every iteration; the averaging window is applied when the series is
+    # read (fraction_from_end is Pacefish-only)
     forces = [ForcesMomentsResultControl(
-        name=f"F_{n}", center_of_rotation=cor, write_control=TimeStepWriteControl(write_interval=1),
-        topological_reference=topo(n)) for n in parts]
+        name=f"F_{FORCE_GROUP}", center_of_rotation=cor,
+        write_control=TimeStepWriteControl(write_interval=1), topological_reference=topo(*parts))]
     air = IncompressibleMaterial(
         name="Air", viscosity_model=NewtonianViscosityModel(
             kinematic_viscosity=DimensionalKinematicViscosity(value=cfg.kinematic_viscosity_m2s,
@@ -934,8 +1039,7 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     _poll(lambda: api["runs"].get_simulation_run(_project(), sim_id, run.run_id),
           every=cfg.poll_s, what="run")
     print(f"[simscale] run {run.run_id} finished", flush=True)
-    parts = [n for n in faces if n not in BOX_FACES]
-    groups = read_forces(api, sim_id, run.run_id, parts, cfg.fraction_from_end)
+    groups = read_forces(api, sim_id, run.run_id, [FORCE_GROUP], cfg.fraction_from_end)
     if not groups:
         raise SimScaleError("the run produced no force plots")
     total = [sum(v) for v in zip(*(g["series"] for g in groups.values()))]

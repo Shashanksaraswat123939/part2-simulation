@@ -29,7 +29,8 @@ def _car(td):
 def test_domain_is_one_closed_fluid_with_every_boundary_labelled():
     with tempfile.TemporaryDirectory() as td:
         car, extra = _car(td)
-        cfg = sc.SimScaleConfig(extra_surfaces=extra)
+        # coarse facets keep this test quick; the probe builds at the real size
+        cfg = sc.SimScaleConfig(extra_surfaces=extra, facet_m=1.5e-3)
         fluid, labels, parts = sc.build_domain(car, cfg)
         assert fluid.is_watertight and parts == ["car", "wheelF"]
         assert set(labels) == set(sc.BOX_FACES) | {"car", "wheelF"}
@@ -73,7 +74,9 @@ def test_models_serialise_with_rotating_wheels_layers_and_wake_boxes():
     assert bcs["wheelF"]["velocity"]["type"] == "ROTATING_WALL_VELOCITY"
     assert bcs["car"]["velocity"]["type"] == "NO_SLIP"
     assert bcs["ground"]["velocity"]["type"] == "MOVING_WALL_VELOCITY"
-    assert {f["name"] for f in d["model"]["resultControl"]["forcesMoments"]} == {"F_car", "F_wheelF"}
+    # one force plot for the whole car, wheels included
+    (fm,) = d["model"]["resultControl"]["forcesMoments"]
+    assert fm["name"] == "F_car" and set(fm["topologicalReference"]["entities"]) == {"F_car", "F_wheelF"}
     mesh = ApiClient().sanitize_for_serialization(
         sc.build_mesh_model(cfg, faces, wheels, {"wakeNear": "p1", "wakeFar": "p2"}))
     kinds = [r["type"] for r in mesh["refinements"]]
