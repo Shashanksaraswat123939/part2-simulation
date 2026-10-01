@@ -208,6 +208,9 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
         owner[mm.original_id()] = n
         solids.append(mm)
     fluid_m = box - m3.Manifold.batch_boolean(solids, m3.OpType.Add)
+    # Air the car seals in (the cockpit under the halo, 651 mm3 on the start
+    # car) is a region of its own to SimScale and plays no part in the flow.
+    fluid_m = max(fluid_m.decompose(), key=lambda m: m.volume())
     out = fluid_m.to_mesh()
     fluid = trimesh.Trimesh(np.asarray(out.vert_properties)[:, :3], np.asarray(out.tri_verts),
                             process=False)
@@ -733,5 +736,5 @@ if __name__ == "__main__":
     if a.cmd == "probe":
         r = probe(str(run / "domain.stl"), names)
         print(json.dumps(r, indent=1, default=str))
-        if "_error" in r["mapped"] or not r["regions"]:
-            raise SystemExit("probe: faces not mapped or no fluid region")
+        if "_error" in r["mapped"] or len(r["regions"]) != 1:
+            raise SystemExit(f"probe: faces not mapped, or {len(r['regions'])} regions, not 1")
