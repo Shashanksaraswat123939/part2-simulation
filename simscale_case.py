@@ -22,7 +22,9 @@ group, k-omega SST), run by SimScale:
 
 Credentials come from the environment and never from this file:
     SIMSCALE_API_KEY      the account's API key
-    SIMSCALE_PROJECT_ID   the project every geometry, mesh and run goes into
+    SIMSCALE_PROJECT_ID   the project every geometry, mesh and run goes into; if
+                          the key's account may not write to it, the account's own
+                          project OWN_PROJECT_NAME is found or created and used
     SIMSCALE_API_BASE     optional, default https://api.simscale.com/v0
 """
 from __future__ import annotations
@@ -79,6 +81,10 @@ class SimScaleConfig:
 
 class SimScaleError(RuntimeError):
     pass
+
+
+OWN_PROJECT_NAME = "STEM Racing optimiser"
+_PROJECT: Optional[str] = None          # the project in use (see _project)
 
 
 # --------------------------------------------------------------------------- geometry
@@ -233,8 +239,8 @@ def force_series(csv_text: str, fraction: float) -> dict:
 # --------------------------------------------------------------------------- SimScale
 def _clients():
     from simscale_sdk import (ApiClient, Configuration, GeometriesApi, GeometryImportsApi,
-                              MeshesApi, MeshOperationsApi, SimulationRunsApi, SimulationsApi,
-                              StorageApi)
+                              MeshesApi, MeshOperationsApi, ProjectsApi, SimulationRunsApi,
+                              SimulationsApi, StorageApi)
     key = os.environ.get("SIMSCALE_API_KEY")
     if not key:
         raise SimScaleError("SIMSCALE_API_KEY is not set")
@@ -245,14 +251,54 @@ def _clients():
     return {"client": client, "storage": StorageApi(client), "imports": GeometryImportsApi(client),
             "geometries": GeometriesApi(client), "sims": SimulationsApi(client),
             "mesh": MeshOperationsApi(client), "meshes": MeshesApi(client),
-            "runs": SimulationRunsApi(client)}
+            "runs": SimulationRunsApi(client), "projects": ProjectsApi(client)}
 
 
 def _project() -> str:
+    if _PROJECT:
+        return _PROJECT
     p = os.environ.get("SIMSCALE_PROJECT_ID")
     if not p:
         raise SimScaleError("SIMSCALE_PROJECT_ID is not set")
     return p
+
+
+def own_project(api) -> str:
+    """The key's own project OWN_PROJECT_NAME, created if it does not exist.
+    Used when the configured project refuses writes (seen 2026-10-01: a key
+    that may not write to the TurboFlow project)."""
+    from simscale_sdk import Project
+    page = 1
+    while True:
+        res = api["projects"].get_projects(limit=100, page=page)
+        items = res.embedded or []
+        for pr in items:
+            if pr.name == OWN_PROJECT_NAME:
+                return pr.project_id
+        if len(items) < 100:
+            break
+        page += 1
+    pr = api["projects"].create_project(Project(
+        name=OWN_PROJECT_NAME, measurement_system="SI",
+        description="Part 5 pattern search: half-car domains, meshes and runs"))
+    return pr.project_id
+
+
+def _use_own_project_if_refused(api, call):
+    """Run call(); on a 403 from the configured project switch to the key's
+    own project, say so, and run it again."""
+    global _PROJECT
+    from simscale_sdk.exceptions import ApiException
+    try:
+        return call()
+    except ApiException as exc:
+        if exc.status != 403 or _PROJECT:
+            raise
+        _PROJECT = own_project(api)
+        print(f"[simscale] project {os.environ.get('SIMSCALE_PROJECT_ID')} refused writes; "
+              f"using the account's own project '{OWN_PROJECT_NAME}' ({_PROJECT}). "
+              f"Set SIMSCALE_PROJECT_ID to {_PROJECT} to skip this step.", flush=True)
+        return call()
 
 
 def _poll(get, done=("FINISHED", "SUCCESS"), failed=("FAILED", "ERROR", "CANCELED"),
@@ -274,11 +320,12 @@ def import_geometry(api, stl_path: str, name: str, every: float = 15.0) -> str:
     with open(stl_path, "rb") as f:
         api["client"].rest_client.PUT(url=storage.url, body=f.read(),
                                       headers={"Content-Type": "application/octet-stream"})
-    imp = api["imports"].import_geometry(_project(), GeometryImportRequest(
-        name=name, location=GeometryImportRequestLocation(storage_id=storage.storage_id),
-        format="STL", input_unit="m",
-        options=GeometryImportRequestOptions(facet_split=False, sewing=False, improve=True,
-                                             optimize_for_lbm_solver=False)))
+    imp = _use_own_project_if_refused(api, lambda: api["imports"].import_geometry(
+        _project(), GeometryImportRequest(
+            name=name, location=GeometryImportRequestLocation(storage_id=storage.storage_id),
+            format="STL", input_unit="m",
+            options=GeometryImportRequestOptions(facet_split=False, sewing=False, improve=True,
+                                                 optimize_for_lbm_solver=False))))
     done = _poll(lambda: api["imports"].get_geometry_import(_project(), imp.geometry_import_id),
                  every=every, what="geometry import")
     return done.geometry_id
@@ -497,7 +544,7 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     api = _clients()
     tag = f"{cfg.run_name}_{int(time.time())}"
     geometry_id = import_geometry(api, str(work / "domain.stl"), tag, cfg.poll_s)
-    ids = {"tag": tag, "geometry_id": geometry_id}
+    ids = {"tag": tag, "project_id": _project(), "geometry_id": geometry_id}
     (work / "simscale.json").write_text(json.dumps(ids, indent=1))
     faces = faces_by_label(face_mapping(api, geometry_id), names)
     regions = region_names(api, geometry_id)
@@ -559,7 +606,8 @@ def probe(domain_stl: str, names: list) -> dict:
         by = faces_by_label(maps, names)
     except SimScaleError as exc:
         by = {"_error": str(exc)}
-    return {"geometry_id": gid, "n_faces": len(maps), "regions": region_names(api, gid),
+    return {"project_id": _project(), "geometry_id": gid, "n_faces": len(maps),
+            "regions": region_names(api, gid),
             "raw": [{k: m.get(k) for k in ("name", "originate_from")} for m in maps[:30]],
             "mapped": by}
 
