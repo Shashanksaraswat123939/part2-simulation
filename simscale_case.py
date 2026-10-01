@@ -179,7 +179,38 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
     labels[on_box] = np.array(BOX_FACES, dtype=object)[side.argmin(axis=0)]
     on_car = np.nonzero(labels == "__car__")[0]
     labels[on_car] = nearest_part(parts, fluid.triangles_center[on_car])
+    # a face the cut left lying in a box plane belongs to that side, whatever
+    # its origin (a handful per car after simplification)
+    T = fluid.triangles
+    for k, (axis, val) in enumerate(((0, lo[0]), (0, hi[0]), (1, lo[1]), (1, hi[1]), (2, lo[2]), (2, hi[2]))):
+        labels[np.all(np.abs(T[:, :, axis] - val) < 1e-9, axis=1)] = BOX_FACES[k]
+    labels = merge_label_islands(fluid, labels, 0.5e-6)
     return fluid, labels, list(parts)
+
+
+def merge_label_islands(mesh, labels, min_area_m2: float) -> np.ndarray:
+    """A patch of one label smaller than `min_area_m2` (a few triangles the
+    nearest-part labelling gave to a neighbour part) joins the label it
+    shares the longest boundary with. SimScale makes every patch a body."""
+    import trimesh
+    labels = np.array(labels, dtype=object)
+    adj = mesh.face_adjacency
+    elen = np.linalg.norm(np.diff(mesh.vertices[mesh.face_adjacency_edges], axis=1)[:, 0], axis=1)
+    for _ in range(4):
+        same = labels[adj[:, 0]] == labels[adj[:, 1]]
+        comp = trimesh.graph.connected_component_labels(adj[same], node_count=len(mesh.faces))
+        small = np.bincount(comp, weights=mesh.area_faces)[comp] < min_area_m2
+        if not small.any():
+            break
+        votes = {}
+        for (a, b), L in zip(adj[~same], elen[~same]):
+            for x, y in ((a, b), (b, a)):
+                if small[x]:
+                    v = votes.setdefault(comp[x], {})
+                    v[labels[y]] = v.get(labels[y], 0.0) + L
+        for k, v in votes.items():
+            labels[comp == k] = max(v, key=v.get)
+    return labels
 
 
 def solid_car(parts: dict, cfg: SimScaleConfig):
@@ -190,9 +221,13 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     intersections, micron edges and stalled imports, probes 2-10, 2026-10-01).
     So the union is filled on a grid (each slice even-odd, so a micron crack
     never holds a cell centre), crevices narrower than 2 x close_m are sealed,
-    and the surface is rebuilt by marching cubes and simplified. The half car
-    is mirrored first, so the surface crosses the symmetry plane square and
-    the box cuts it cleanly there."""
+    and the surface is rebuilt by marching cubes and simplified.
+
+    The half parts do not meet the symmetry plane square-on (the body runs
+    into it in a strip up to 0.14 mm off; mirrored, that is a groove the box
+    cut slices at a glancing angle: 30 slits, run 3). So within close_m of
+    the plane the cross-section at close_m is extruded straight through it,
+    and on past the plane, which the box then cuts at exactly 90 degrees."""
     import manifold3d as m3
     from scipy import ndimage
     from skimage import draw, measure
@@ -204,17 +239,21 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     r = max(1, int(round(cfg.close_m / h)))
     pad = (r + 3) * h
     U = m3.Manifold.batch_boolean([man(t) for t in parts.values()], m3.OpType.Add)
-    U = (U + U.mirror((0, 1, 0))).trim_by_plane((0, 1, 0), -pad)
     b = U.bounding_box()
     lo, hi = np.array(b[:3]) - pad, np.array(b[3:]) + pad
+    lo[1] = -pad                       # rows straddle y = 0 symmetrically
     xs, ys, zs = (np.arange(lo[k] + h / 2, hi[k], h) for k in range(3))
     occ = np.zeros((len(xs), len(ys), len(zs)), bool)
     for k, z in enumerate(zs):
         for poly in U.slice(z).to_polygons():
             occ[:, :, k] ^= draw.polygon2mask((len(xs), len(ys)), (np.asarray(poly) - lo[:2]) / h - 0.5)
+    strip = ys < cfg.close_m
+    occ[:, strip, :] = occ[:, [np.argmax(~strip)], :]
     g = np.indices((2 * r + 1,) * 3) - r
     ball = (g ** 2).sum(0) <= r * r
     occ = ndimage.binary_closing(occ, structure=ball)
+    occ[:, strip, :] = occ[:, [np.argmax(~strip)], :]
+    occ[:, :2, :] = False              # closed off beyond the plane, outside the box
     f = ndimage.gaussian_filter(occ.astype(np.float32), 0.7)
     del occ
     v, faces, _n, _ = measure.marching_cubes(f, 0.5)
