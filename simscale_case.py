@@ -62,7 +62,6 @@ class SimScaleConfig:
     speed_mps: float = 20.0
     density_kgm3: float = 1.225
     kinematic_viscosity_m2s: float = 1.813e-5 / 1.225
-    turbulence_intensity: float = 0.005
     iterations: int = 2000
     resolution: str = "medium"
     # Boundary layers (team requirement: y+ <= 2): first layer, growth, count.
@@ -661,7 +660,7 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
     """The Incompressible model. `wheels`: {part name: (centre m, omega rad/s)}."""
     from simscale_sdk import (
         AdvancedConcepts, AngularRotation, ComponentVectorFunction, ConstantFunction,
-        DecimalVector, DimensionalDensity, DimensionalFunctionDimensionless, DimensionalFunctionPressure,
+        DecimalVector, DimensionalDensity, DimensionalFunctionPressure,
         DimensionalFunctionRotationSpeed, DimensionalKinematicViscosity, DimensionalPressure,
         DimensionalTime, DimensionalVectorFunctionSpeed, DimensionalVectorLength,
         DimensionalVectorSpeed, FieldCalculationsTurbulenceResultControl, FixedValuePBC,
@@ -670,8 +669,9 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
         IncompressibleFluidMaterials, IncompressibleMaterial, MovingWallVBC,
         NewtonianViscosityModel, NoSlipVBC, PressureOutletBC, RelaxationFactor, ResidualControls,
         RotatingWallVBC, Schemes, ScotchDecomposeAlgorithm, SlipVBC, SymmetryBC,
-        TimeStepWriteControl, Tolerance, TopologicalReference, TurbulenceIntensityTIBC,
-        VelocityInletBC, WallBC, YPlusRASResultType)
+        TimeStepWriteControl, Tolerance, TopologicalReference, VelocityInletBC, WallBC,
+        YPlusRASResultType, TimeDifferentiationSchemes, GradientSchemes, DivergenceSchemes,
+        LaplacianSchemes, InterpolationSchemes, SurfaceNormalGradientSchemes)
 
     def topo(*labels):
         return TopologicalReference(entities=[f for n in labels for f in faces.get(n, [])], sets=[])
@@ -680,9 +680,9 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
         x=ConstantFunction(value=U), y=ConstantFunction(value=0.0), z=ConstantFunction(value=0.0)),
         unit="m/s")
     parts = [n for n in faces if n not in BOX_FACES]
+    # (an inlet turbulence intensity is a Pacefish-only field; the standard
+    # solver takes the SimScale defaults for k and omega, as the team's job does)
     bcs = [VelocityInletBC(name="inlet", velocity=FixedValueVBC(value=vel),
-                           turbulence_intensity=TurbulenceIntensityTIBC(value=DimensionalFunctionDimensionless(
-                               value=ConstantFunction(value=100.0 * cfg.turbulence_intensity), unit="%")),
                            topological_reference=topo("inlet")),
            PressureOutletBC(name="outlet", gauge_pressure=FixedValuePBC(
                value=DimensionalFunctionPressure(value=ConstantFunction(value=0.0), unit="Pa")),
@@ -703,9 +703,10 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
             v = NoSlipVBC()
         bcs.append(WallBC(name=n, velocity=v, topological_reference=topo(n)))
     cor = DimensionalVectorLength(value=DecimalVector(x=x_moment_m, y=0.0, z=0.0), unit="m")
+    # one force history per part, every iteration; the averaging window is
+    # applied when the series is read (fraction_from_end is Pacefish-only)
     forces = [ForcesMomentsResultControl(
         name=f"F_{n}", center_of_rotation=cor, write_control=TimeStepWriteControl(write_interval=1),
-        fraction_from_end=cfg.fraction_from_end, export_statistics=True, group_assignments=False,
         topological_reference=topo(n)) for n in parts]
     air = IncompressibleMaterial(
         name="Air", viscosity_model=NewtonianViscosityModel(
@@ -725,7 +726,11 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
                 velocity=Tolerance(absolute_tolerance=tol), pressure=Tolerance(absolute_tolerance=tol),
                 turbulent_kinetic_energy=Tolerance(absolute_tolerance=tol),
                 omega_dissipation_rate=Tolerance(absolute_tolerance=tol)),
-            solvers=FluidSolvers(), schemes=Schemes()),
+            solvers=FluidSolvers(),
+            schemes=Schemes(time_differentiation=TimeDifferentiationSchemes(),
+                            gradient=GradientSchemes(), divergence=DivergenceSchemes(),
+                            laplacian=LaplacianSchemes(), interpolation=InterpolationSchemes(),
+                            surface_normal_gradient=SurfaceNormalGradientSchemes())),
         simulation_control=FluidSimulationControl(
             end_time=DimensionalTime(value=cfg.iterations, unit="s"),
             delta_t=DimensionalTime(value=1, unit="s"),
