@@ -95,6 +95,13 @@ OWN_PROJECT_NAME = "STEM Racing optimiser"
 # it 0.2 mm folded it into itself: SimScale "face self_int" faults, probe 3,
 # 2026-10-01). As drawn it imports cleanly (probe 2).
 EXACT_PARTS = {"halo"}
+# The bodywork behind the halo leans in until it touches the halo's back face,
+# leaving a wedge of air 0-1.1 mm wide between two nearly parallel faces
+# (probe 4: 'fault-face-slit' at the halo's back, 2026-10-01). The halo's
+# last 3 mm are stretched this far back, into the bodywork. The stretch is
+# monotone in x, so no face turns over. ponytail: fixed length; if a car's
+# gap exceeds it, the probe says so.
+HALO_BACK_STRETCH_M = 1.2e-3
 _PROJECT: Optional[str] = None          # the project in use (see _project)
 
 
@@ -164,6 +171,11 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
             o = man(t).simplify(cfg.simplify_m).to_mesh()
             t = trimesh.Trimesh(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts),
                                 process=False)
+        if n == "halo":
+            v = np.array(t.vertices)
+            x0 = v[:, 0].max() - 3e-3
+            v[:, 0] += HALO_BACK_STRETCH_M * np.clip((v[:, 0] - x0) / 3e-3, 0, 1)
+            t = trimesh.Trimesh(v, t.faces, process=False)
         if cfg.close_gap_m > 0 and n not in rotating | EXACT_PARTS:
             t = trimesh.Trimesh(t.vertices + t.vertex_normals * cfg.close_gap_m, t.faces,
                                 process=False)
