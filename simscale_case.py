@@ -77,6 +77,7 @@ class SimScaleConfig:
     voxel_m: float = 1.25e-4
     close_m: float = 2.5e-4
     surface_tol_m: float = 3e-5
+    facet_m: float = 1.0e-3            # triangle size of the rebuilt car surface
     poll_s: float = 15.0
     max_run_time_s: float = 36000.0
     extra_surfaces: tuple = ()
@@ -162,7 +163,7 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
     fluid_m = box - car
     # Air the car seals in (the cockpit under the halo, 651 mm3 on the start
     # car) is a region of its own to SimScale and plays no part in the flow.
-    fluid_m = max(fluid_m.decompose(), key=lambda m: m.volume()).simplify(cfg.surface_tol_m)
+    fluid_m = max(fluid_m.decompose(), key=lambda m: m.volume())
     out = fluid_m.to_mesh()
     fluid = trimesh.Trimesh(np.asarray(out.vert_properties)[:, :3], np.asarray(out.tri_verts),
                             process=False)
@@ -265,7 +266,123 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
     # specks of a few cells are marching-cubes debris; real parts are far bigger
     keep = [m for m in M.decompose() if m.volume() > 1e-9]
     M = m3.Manifold.batch_boolean(keep, m3.OpType.Add).simplify(cfg.surface_tol_m)
+    o = M.to_mesh()
+    v, faces = isotropic_remesh(np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts), cfg.facet_m)
+    # Cut flush with the symmetry plane and the track here, where the slivers
+    # the cuts leave can still be collapsed (vertices on a plane stay on it),
+    # so the box boolean meets the car along existing edges.
+    M = _manifold(v, faces).trim_by_plane((0, 1, 0), 0.0).trim_by_plane((0, 0, 1), 0.0)
+    o = M.to_mesh()
+    v, faces = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
+    pinned = (np.abs(v[:, 1]) < 1e-9) | (np.abs(v[:, 2]) < 1e-9)
+    v, faces = collapse_short_edges(v, faces, 0.4 * cfg.facet_m, pinned=pinned)
+    M = _manifold(v, faces)
+    if M.status() != m3.Error.NoError:
+        raise SimScaleError(f"rebuilt car surface: {M.status()}")
     return M.as_original()
+
+
+def _manifold(v, f):
+    import manifold3d as m3
+    return m3.Manifold(m3.Mesh(vert_properties=np.array(v, np.float32, order="C"),
+                               tri_verts=np.array(f, np.uint32, order="C")))
+
+
+def _tri_normals(v, f):
+    return np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+
+
+def collapse_short_edges(v, f, tol: float, passes: int = 10, pinned=None):
+    """Edges shorter than `tol` collapse to their midpoint, or onto the
+    `pinned` end if one end is pinned (a vertex on a cut plane stays on it;
+    two pinned ends collapse to their midpoint, which is on the plane too).
+    A collapse is skipped if it would pinch the surface (link condition) or
+    turn a face over. Returns new (vertices, faces)."""
+    v, f = np.array(v, float), np.array(f)
+    pinned = np.zeros(len(v), bool) if pinned is None else np.array(pinned, bool)
+    for _ in range(passes):
+        E = np.unique(np.sort(np.vstack([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1), axis=0)
+        ln = np.linalg.norm(v[E[:, 0]] - v[E[:, 1]], axis=1)
+        order = np.argsort(ln)
+        short = E[order][ln[order] < tol]
+        if not len(short):
+            break
+        vf = [[] for _ in range(len(v))]
+        for i, t in enumerate(f):
+            for w in t:
+                vf[w].append(i)
+        touched, dead, done = set(), np.zeros(len(f), bool), 0
+        for a, b in short:
+            if a in touched or b in touched:
+                continue
+            both = [i for i in vf[a] if b in f[i]]
+            if len(both) != 2:
+                continue
+            ring_a = {w for i in vf[a] for w in f[i]} - {a}
+            ring_b = {w for i in vf[b] for w in f[i]} - {b}
+            if ring_a & ring_b != {w for i in both for w in f[i]} - {a, b}:
+                continue
+            moved = [i for i in set(vf[a]) | set(vf[b]) if i not in both]
+            T = f[moved].copy()
+            T[T == b] = a
+            p = v[a] if pinned[a] and not pinned[b] else v[b] if pinned[b] and not pinned[a]                 else 0.5 * (v[a] + v[b])
+            v2 = v[T]
+            v2[T == a] = p
+            n_new = np.cross(v2[:, 1] - v2[:, 0], v2[:, 2] - v2[:, 0])
+            if np.any(np.einsum("ij,ij->i", n_new, _tri_normals(v, f[moved])) <= 0):
+                continue
+            v[a] = p
+            pinned[a] = pinned[a] or pinned[b]
+            f[moved] = T
+            dead[both] = True
+            touched |= ring_a | ring_b | {a, b}
+            done += 1
+        f = f[~dead]
+        if not done:
+            break
+    used = np.unique(f)
+    remap = np.full(len(v), -1)
+    remap[used] = np.arange(len(used))
+    return v[used], remap[f]
+
+
+def tangential_smooth(v, f, iters: int = 3, lam: float = 0.5):
+    """Move each vertex toward the mean of its neighbours, along its tangent
+    plane only (the shape stays, the triangles even out). A move that would
+    turn a face over is dropped."""
+    from scipy import sparse
+    v = np.array(v, float)
+    E = np.vstack([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
+    A = sparse.coo_matrix((np.ones(2 * len(E)), (np.r_[E[:, 0], E[:, 1]], np.r_[E[:, 1], E[:, 0]])),
+                          shape=(len(v), len(v))).tocsr()
+    A.data[:] = 1.0
+    deg = np.asarray(A.sum(1)).ravel()
+    for _ in range(iters):
+        n0 = _tri_normals(v, f)
+        vn = np.zeros_like(v)
+        np.add.at(vn, f.ravel(), np.repeat(n0, 3, axis=0))
+        vn /= np.maximum(np.linalg.norm(vn, axis=1), 1e-30)[:, None]
+        d = (A @ v) / deg[:, None] - v
+        d -= np.einsum("ij,ij->i", d, vn)[:, None] * vn
+        v2 = v + lam * d
+        bad = np.einsum("ij,ij->i", _tri_normals(v2, f), n0) <= 0
+        v2[np.unique(f[bad])] = v[np.unique(f[bad])]
+        v = v2
+    return v
+
+
+def isotropic_remesh(v, f, length: float, passes: int = 3):
+    """Triangles of about `length` everywhere, with no slivers: SimScale's
+    facet checks flag long thin triangles (20 mm x 0.4 mm after plain
+    simplification, run 4) and heal them by splitting faces, which breaks
+    the sewing. Split long edges, collapse short ones, relax tangentially."""
+    for _ in range(passes):
+        M = _manifold(v, f).refine_to_length(1.4 * length)
+        o = M.to_mesh()
+        v, f = np.asarray(o.vert_properties)[:, :3], np.asarray(o.tri_verts)
+        v, f = collapse_short_edges(v, f, 0.6 * length)
+        v = tangential_smooth(v, f)
+    return v, f
 
 
 def nearest_part(parts: dict, points) -> np.ndarray:
