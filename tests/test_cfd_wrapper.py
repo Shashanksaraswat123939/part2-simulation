@@ -116,7 +116,7 @@ def test_negative_volume_cells_raises():
 def test_non_convergence_does_not_raise_but_flags_health_report():
     original = cfd_wrapper._invoke_simscale
     cfd_wrapper._invoke_simscale = lambda stl_path, cfg, work: _fake_dict(
-        residual_final=1e-2
+        residual_final=1e-1
     )
     path = _tetrahedron_path()
     try:
