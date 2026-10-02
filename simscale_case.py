@@ -291,7 +291,13 @@ def solid_car(parts: dict, cfg: SimScaleConfig):
         glue = idx[near >= 2]
         occ[glue[:, 0], glue[:, 1], glue[:, 2]] = True
     occ = extrude(ndimage.binary_closing(occ, structure=ball, iterations=n_close))
-    occ[:, :2, :] = False              # closed off beyond the plane and below the
+    # Knife edges (the wings' trailing edges taper to 0.03 mm) came out as
+    # slivers 0.15 mm thick under 0.5 mm facets, which SimScale rejects as
+    # the surface touching itself (bad_face_face at the rear wing's trailing
+    # edge, search batch 0, 2 Oct 2026). An opening cuts every edge square
+    # where it is still ~3 cells (0.4 mm) thick; flat faces are unchanged.
+    occ = extrude(ndimage.binary_opening(occ, structure=ndimage.generate_binary_structure(3, 1)))
+    occ[:, :2, :] = False             # closed off beyond the plane and below the
     occ[:, :, :2] = False              # track, both outside the box
     f = ndimage.gaussian_filter(occ.astype(np.float32), 0.7)
     del occ
