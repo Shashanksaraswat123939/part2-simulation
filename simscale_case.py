@@ -996,6 +996,25 @@ def read_final_residual(api, sim_id: str, run_id: str) -> float:
     return float(rows[-1][col]) if col else float("nan")
 
 
+def _solve(api, sim_id: str, name: str, every: float):
+    """Start one run of the simulation and wait for it; a failed run prints
+    SimScale's event log, which is where the reason is."""
+    from simscale_sdk import SimulationRun
+    run = api["runs"].create_simulation_run(_project(), sim_id, SimulationRun(name=name))
+    api["runs"].start_simulation_run(_project(), sim_id, run.run_id)
+    try:
+        return run, _poll(lambda: api["runs"].get_simulation_run(_project(), sim_id, run.run_id),
+                          every=every, what="run")
+    except SimScaleError:
+        try:
+            log = api["runs"].get_simulation_run_event_log(_project(), sim_id, run.run_id)
+            text = " | ".join(str(e.to_dict()) for e in (log.entries or []))
+        except Exception as exc:  # noqa: BLE001 -- the log is a report, not a result
+            text = f"(no event log: {exc})"
+        print(f"[simscale] run {name} failed; event log: {text[-4000:]}", flush=True)
+        raise
+
+
 def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     """Run one half car on SimScale. Returns the same result dict the OpenFOAM
     case returns on main (half-car forces, health, per-part forces)."""
@@ -1016,7 +1035,7 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     regions = [fluid_region(regions, faces)]
     R = {s["name"]: s for s in cfg.extra_surfaces if s.get("rotating")}
     wheels = {n: (tuple(s["rotating"]["origin"]), float(s["rotating"]["omega"])) for n, s in R.items()}
-    from simscale_sdk import MeshOperation, SimulationRun, SimulationSpec
+    from simscale_sdk import MeshOperation, SimulationSpec
     spec = SimulationSpec(name=tag, geometry_id=geometry_id,
                           model=build_model(cfg, faces, regions, wheels))
     sim_id = api["sims"].create_simulation(_project(), spec).simulation_id
@@ -1038,10 +1057,17 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     ids.update(simulation_id=sim_id, mesh_id=mesh_op.mesh_id, cells=cells)
     print(f"[simscale] mesh {mesh_op.mesh_id}: {cells} cells; solving", flush=True)
     (work / "simscale.json").write_text(json.dumps(ids, indent=1))
-    run = api["runs"].create_simulation_run(_project(), sim_id, SimulationRun(name="run"))
-    api["runs"].start_simulation_run(_project(), sim_id, run.run_id)
-    done = _poll(lambda: api["runs"].get_simulation_run(_project(), sim_id, run.run_id),
-                 every=cfg.poll_s, what="run")
+    try:
+        run, done = _solve(api, sim_id, "run", cfg.poll_s)
+    except SimScaleError:
+        if cfg.cores is None:
+            raise
+        # the first runs asking for 96 cores FAILED 17 s in, with no reason
+        # given (2 Oct 2026): once more with SimScale's own choice of cores
+        s = api["sims"].get_simulation(_project(), sim_id)
+        s.model.simulation_control.num_processors = None
+        api["sims"].update_simulation(_project(), sim_id, s)
+        run, done = _solve(api, sim_id, "run_auto_cores", cfg.poll_s)
     print(f"[simscale] run {run.run_id} finished: " + " ".join(
         f"{getattr(done, 'duration', None)}, {getattr(done, 'compute_resource', None)}".split()),
         flush=True)
