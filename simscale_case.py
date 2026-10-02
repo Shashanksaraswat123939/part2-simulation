@@ -194,6 +194,22 @@ def build_domain(car_stl: str, cfg: SimScaleConfig):
     T = fluid.triangles
     for k, (axis, val) in enumerate(((0, lo[0]), (0, hi[0]), (1, lo[1]), (1, hi[1]), (2, lo[2]), (2, hi[2]))):
         labels[np.all(np.abs(T[:, :, axis] - val) < 1e-9, axis=1)] = BOX_FACES[k]
+    # A collapsed sliver: two triangles on the same three vertices, back to
+    # back (zero volume, four faces on each of its edges). Manifold accepts
+    # it; SimScale cannot sew it and leaves it as a sheet body, then refuses
+    # the simulation (one on the nose of a screen car, 2 Oct 2026). Both go,
+    # and the surface around them is closed without them. Vertices are joined
+    # by position first, as SimScale joins them reading the file: the
+    # boolean's output keeps the flap on vertices of its own.
+    fluid.merge_vertices(digits_vertex=8)
+    key = np.sort(fluid.faces, axis=1)
+    _u, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    single = cnt[inv.ravel()] == 1
+    if not single.all():
+        fluid = trimesh.Trimesh(fluid.vertices, fluid.faces[single], process=False)
+        labels = labels[single]
+        if not fluid.is_watertight:
+            raise SimScaleError("the fluid domain is not closed once its slivers are removed")
     labels = merge_label_islands(fluid, labels, 0.5e-6)
     return fluid, labels, list(parts)
 
