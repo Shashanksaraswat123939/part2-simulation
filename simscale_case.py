@@ -83,9 +83,11 @@ class SimScaleConfig:
     facet_m: float = 5.0e-4            # triangle size of the rebuilt car surface
     poll_s: float = 15.0
     max_run_time_s: float = 36000.0
-    # Solver cores. Left to SimScale, the first medium car (6.5 M cells) took
-    # 4 h 35 min to solve, against GitHub's 6 h job limit (1 Oct 2026).
-    cores: int = 96
+    # Solver cores, tried in turn until the plan allows one; then SimScale's
+    # own choice. The plan refused 96 (MSG_SELECTED_NUMBER_OF_CORES_NOT_AVAILABLE),
+    # and SimScale's choice was 8: 2 h 9 min for a 4.3 M-cell coarse car and
+    # 4 h 35 min for a 6.5 M-cell medium one (2 Oct 2026).
+    cores: tuple = (64, 32, 16)
     extra_surfaces: tuple = ()
     domain_reference_bounds: Optional[tuple] = None
     run_name: str = "car"
@@ -912,7 +914,7 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
             delta_t=DimensionalTime(value=1, unit="s"),
             write_control=TimeStepWriteControl(write_interval=cfg.iterations),
             max_run_time=DimensionalTime(value=cfg.max_run_time_s, unit="s"),
-            num_processors=cfg.cores,
+            num_processors=cfg.cores[0] if cfg.cores else None,
             decompose_algorithm=ScotchDecomposeAlgorithm()),
         result_control=FluidResultControls(
             forces_moments=forces,
@@ -1013,14 +1015,14 @@ def _solve(api, sim_id: str, name: str, every: float):
     try:
         return run, _poll(lambda: api["runs"].get_simulation_run(_project(), sim_id, run.run_id),
                           every=every, what="run")
-    except SimScaleError:
+    except SimScaleError as err:
         try:
             log = api["runs"].get_simulation_run_event_log(_project(), sim_id, run.run_id)
             text = " | ".join(str(e.to_dict()) for e in (log.entries or []))
         except Exception as exc:  # noqa: BLE001 -- the log is a report, not a result
             text = f"(no event log: {exc})"
         print(f"[simscale] run {name} failed; event log: {text[-4000:]}", flush=True)
-        raise
+        raise SimScaleError(f"{err} {text[-1000:]}") from err
 
 
 def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
@@ -1065,17 +1067,18 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     ids.update(simulation_id=sim_id, mesh_id=mesh_op.mesh_id, cells=cells)
     print(f"[simscale] mesh {mesh_op.mesh_id}: {cells} cells; solving", flush=True)
     (work / "simscale.json").write_text(json.dumps(ids, indent=1))
-    try:
-        run, done = _solve(api, sim_id, "run", cfg.poll_s)
-    except SimScaleError:
-        if cfg.cores is None:
-            raise
-        # the first runs asking for 96 cores FAILED 17 s in, with no reason
-        # given (2 Oct 2026): once more with SimScale's own choice of cores
-        s = api["sims"].get_simulation(_project(), sim_id)
-        s.model.simulation_control.num_processors = None
-        api["sims"].update_simulation(_project(), sim_id, s)
-        run, done = _solve(api, sim_id, "run_auto_cores", cfg.poll_s)
+    tries = list(cfg.cores) + [None]
+    for k, n in enumerate(tries):
+        if k:
+            s = api["sims"].get_simulation(_project(), sim_id)
+            s.model.simulation_control.num_processors = n
+            api["sims"].update_simulation(_project(), sim_id, s)
+        try:
+            run, done = _solve(api, sim_id, f"run_{n or 'auto'}_cores", cfg.poll_s)
+            break
+        except SimScaleError as exc:
+            if n is None or "NUMBER_OF_CORES_NOT_AVAILABLE" not in str(exc):
+                raise
     print(f"[simscale] run {run.run_id} finished: " + " ".join(
         f"{getattr(done, 'duration', None)}, {getattr(done, 'compute_resource', None)}".split()),
         flush=True)
