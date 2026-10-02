@@ -736,6 +736,8 @@ def _poll(get, done=("FINISHED", "SUCCESS"), failed=("FAILED", "ERROR", "CANCELE
         if status in done:
             return obj
         if status in failed:
+            # in full here: callers shorten the message (a fault's position was cut off)
+            print(f"[simscale] {what} {status}: {getattr(obj, 'failure_reason', '')}", flush=True)
             raise SimScaleError(f"{what} {status}: {getattr(obj, 'failure_reason', '')}")
         if timeout_s and time.time() - t0 > timeout_s:
             raise SimScaleError(f"{what} still {status} after {timeout_s / 60:.0f} min")
