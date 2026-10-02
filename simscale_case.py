@@ -83,6 +83,9 @@ class SimScaleConfig:
     facet_m: float = 5.0e-4            # triangle size of the rebuilt car surface
     poll_s: float = 15.0
     max_run_time_s: float = 36000.0
+    # Solver cores. Left to SimScale, the first medium car (6.5 M cells) took
+    # 4 h 35 min to solve, against GitHub's 6 h job limit (1 Oct 2026).
+    cores: int = 96
     extra_surfaces: tuple = ()
     domain_reference_bounds: Optional[tuple] = None
     run_name: str = "car"
@@ -901,6 +904,7 @@ def build_model(cfg: SimScaleConfig, faces: dict, regions: list, wheels: dict,
             delta_t=DimensionalTime(value=1, unit="s"),
             write_control=TimeStepWriteControl(write_interval=cfg.iterations),
             max_run_time=DimensionalTime(value=cfg.max_run_time_s, unit="s"),
+            num_processors=cfg.cores,
             decompose_algorithm=ScotchDecomposeAlgorithm()),
         result_control=FluidResultControls(
             forces_moments=forces,
@@ -1036,9 +1040,11 @@ def invoke(car_stl: str, cfg: SimScaleConfig, workdir: str) -> dict:
     (work / "simscale.json").write_text(json.dumps(ids, indent=1))
     run = api["runs"].create_simulation_run(_project(), sim_id, SimulationRun(name="run"))
     api["runs"].start_simulation_run(_project(), sim_id, run.run_id)
-    _poll(lambda: api["runs"].get_simulation_run(_project(), sim_id, run.run_id),
-          every=cfg.poll_s, what="run")
-    print(f"[simscale] run {run.run_id} finished", flush=True)
+    done = _poll(lambda: api["runs"].get_simulation_run(_project(), sim_id, run.run_id),
+                 every=cfg.poll_s, what="run")
+    print(f"[simscale] run {run.run_id} finished: " + " ".join(
+        f"{getattr(done, 'duration', None)}, {getattr(done, 'compute_resource', None)}".split()),
+        flush=True)
     groups = read_forces(api, sim_id, run.run_id, [FORCE_GROUP], cfg.fraction_from_end)
     if not groups:
         raise SimScaleError("the run produced no force plots")

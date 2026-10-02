@@ -65,7 +65,13 @@ MAX_FORCE_MEAN_STDERR: float = 0.01
 # residuals agreeing to +/-1.1% across a 19x cell range -- i.e. the plateau is
 # not corrupting the force, the unsteadiness is, and force_oscillation is what
 # reports that. Tighten it once the case is steady.
-CONVERGENCE_RESIDUAL: float = 5e-3
+#
+# ON SIMSCALE the plateau is higher: the first medium car (6.5 M cells, twelve
+# wall layers, 1 Oct 2026) ended at 1.7e-2 with its averaged drag steady to
+# 0.35 % standard error and 0.4 % drift. 5e-3 would reject every car for a
+# number that says nothing about the force being ranked, so the residual only
+# catches a diverging solve here and the drift gate below does the judging.
+CONVERGENCE_RESIDUAL: float = 5e-2
 
 # Largest drift of the averaged streamwise force (|slope| x window / mean) for
 # which a solve counts as converged. See the drift gate in run_half_car_cfd.
