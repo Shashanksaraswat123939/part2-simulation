@@ -215,6 +215,12 @@ def run_half_car_cfd(
         result = _invoke_simscale(str(path), cfg, work)
     except simscale_case.SimScaleError as exc:
         raise CFDRunError(f"SimScale: {exc}") from exc
+    except Exception as exc:
+        # the SDK's ApiException carries SimScale's reason in its body, which
+        # the search's 400-character error never reached (a 422, 2 Oct 2026)
+        if getattr(exc, "body", None):
+            print(f"[simscale] API error {getattr(exc, 'status', '')}: {exc.body}", flush=True)
+        raise
 
     if int(result.get("negative_volume_cells", 0)) > 0:
         raise CFDRunError("the mesh contains negative-volume cells")
